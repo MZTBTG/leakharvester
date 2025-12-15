@@ -1,0 +1,40 @@
+[project]
+name = "leakharvester"
+version = "0.1.0"
+description = "Motor de ingestão e análise de dados de vazamentos de alta performance."
+requires-python = ">=3.12"
+dependencies = [
+    "clickhouse-connect>=0.9.0", # Driver verificado (v0.9.2 latest)
+    "polars[all]>=1.36.0",       # Motor DataFrame verificado (v1.36.1 latest)
+    "typer>=0.12.0",             # CLI
+    "rich>=13.7.0",              # UI
+    "pydantic-settings>=2.2.0",  # Config
+    "pyarrow>=17.0.0",           # Backend Arrow
+    "orjson>=3.10.0",            # JSON Fast
+]
+
+[tool.uv]
+dev-dependencies = [
+    "mypy>=1.11.0",
+    "ruff>=0.6.0",
+    "pytest>=8.3.0",
+    "pytest-sugar>=1.0.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+ignore = ["E501"]
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests"]
