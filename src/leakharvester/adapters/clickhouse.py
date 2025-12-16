@@ -11,7 +11,8 @@ class ClickHouseAdapter(BreachRepository):
             port=settings.CLICKHOUSE_PORT,
             username=settings.CLICKHOUSE_USER,
             password=settings.CLICKHOUSE_PASSWORD,
-            database=settings.CLICKHOUSE_DB
+            database=settings.CLICKHOUSE_DB,
+            settings={"async_insert": 1, "wait_for_async_insert": 1} # Buffer on server side
         )
 
     def insert_arrow_batch(self, table: pa.Table, table_name: str) -> None:

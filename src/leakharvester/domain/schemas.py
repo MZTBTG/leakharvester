@@ -17,7 +17,7 @@ RAW_CSV_SCHEMA = {
 CANONICAL_SCHEMA = pl.Schema({
     "source_file": pl.String,
     "breach_date": pl.Date,
-    "import_date": pl.Datetime,
+    "import_date": pl.Datetime("us"),
     "email": pl.String,
     "username": pl.String,
     "password": pl.String,

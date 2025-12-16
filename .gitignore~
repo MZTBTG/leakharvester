@@ -1,3 +1,5 @@
+.gemini/
+gha-creds-*.json
 
 # Python
 __pycache__/
@@ -31,7 +33,6 @@ venv/
 ENV/
 env.bak/
 venv.bak/
-docs/
 
 # Testing
 .pytest_cache/
@@ -40,8 +41,6 @@ docs/
 htmlcov/
 .coverage
 .coverage.*
-.gemini/
-gha-creds-*.json
 
 # ClickHouse
 data/clickhouse_data/
