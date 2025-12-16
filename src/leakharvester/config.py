@@ -20,9 +20,13 @@ class Settings(BaseSettings):
     CLICKHOUSE_DB: str = "vault"
     
     # Ingestion
-    BATCH_SIZE: int = 500_000
+    BATCH_SIZE: int = 5_000_000
     
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env", 
+        env_file_encoding="utf-8",
+        extra="ignore" # Ignore external env vars like GOOGLE_API_KEY
+    )
 
     def create_dirs(self) -> None:
         self.RAW_DIR.mkdir(parents=True, exist_ok=True)

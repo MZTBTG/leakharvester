@@ -1,4 +1,4 @@
-from typing import Protocol
+from typing import Protocol, Any
 from pathlib import Path
 import polars as pl
 
@@ -15,6 +15,14 @@ class FileStorage(Protocol):
         """Yields PyArrow batches from a Parquet file."""
         ...
     
+    def read_lines_batched(self, path: Path, batch_size: int = 100_000) -> Any:
+        """Yields batches of raw lines from a text file."""
+        ...
+
+    def read_stream_batched(self, stream: Any, batch_size: int = 100_000) -> Any:
+        """Yields batches of raw lines from a file-like stream (stdin)."""
+        ...
+
     def move_file(self, src: Path, dest: Path) -> None:
         """Moves a file from src to dest."""
         ...
