@@ -1,5 +1,7 @@
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+import threading
+import queue
 import polars as pl
 import pyarrow as pa
 from leakharvester.ports.repository import BreachRepository
@@ -24,110 +26,234 @@ class BreachIngestor:
     ) -> None:
         log_info(f"Iniciando processamento de: {input_path} [Format: {format}, NoCheck: {no_check}]")
         
-        # 1. Lazy Scan
+        # Initial peek to detect columns/schema
         try:
-            lazy_df = self.file_storage.scan_csv(input_path)
+            # Read just the header/first few lines to detect schema
+            preview_df = pl.read_csv(input_path, n_rows=100, ignore_errors=True)
+            columns = preview_df.columns
         except Exception as e:
-            log_error(f"Erro ao inicializar scan para {input_path}: {e}")
+            log_error(f"Erro ao ler cabeçalho de {input_path}: {e}")
             return
-
-        # 2. Schema Normalization
-        try:
-            # We need to fetch schema/columns to do mapping. 
-            # scan_csv is lazy, but we can inspect columns from the plan or fetch 1 row.
-            # Polars lazy frame has .columns property which might require schema inference.
-            # However, `scan_csv` usually infers schema. 
-            columns = lazy_df.collect_schema().names()
-        except Exception as e:
-             log_error(f"Erro ao inferir schema para {input_path}: {e}")
-             self._move_to_quarantine(input_path, quarantine_dir)
-             return
 
         rename_map = detect_column_mapping(columns)
         
+        # If mapping fails or it looks raw, fallback to Raw Streaming
         if not rename_map:
              if "raw_line" in columns or len(columns) == 1:
-                 log_warning(f"Modo RAW detectado para {input_path}. Alternando para Ingestão em Streaming (Baixo Consumo de RAM).")
+                 log_warning(f"Modo RAW detectado para {input_path}. Alternando para Ingestão em Streaming.")
                  self._process_raw_streaming(input_path, staging_dir, batch_size, format=format, no_check=no_check)
                  return
              else:
                  log_warning(f"Não foi possível mapear colunas críticas em {input_path}. Movendo para quarentena.")
                  self._move_to_quarantine(input_path, quarantine_dir)
                  return
-        
-        # Standard Structured Mode (Logic continues here for CSVs)
-        lazy_df = lazy_df.rename(rename_map)
 
-        # 3. Transformation and Enrichment
-        # Ensure we have all target columns, filling missing ones with nulls/literals
-        target_cols = CANONICAL_SCHEMA.names()
+        # --- STREAMING STRUCTURED INGESTION ---
+        chunk_idx = 0
         
-        # Add source_file
-        lazy_df = lazy_df.with_columns(pl.lit(input_path.name).alias("source_file"))
+        # Threading Setup
+        upload_queue = queue.Queue(maxsize=3)
+        stop_event = threading.Event()
+        error_container = []
 
-        # Add missing columns as empty strings/nulls so we can select them later
-        existing_cols = lazy_df.collect_schema().names()
-        for col in target_cols:
-            if col not in existing_cols and col != "_search_blob" and col != "import_date":
-                if col == "breach_date":
-                    lazy_df = lazy_df.with_columns(pl.lit(None).cast(pl.Date).alias(col))
-                else:
-                    lazy_df = lazy_df.with_columns(pl.lit("").alias(col))
-
-        # Build _search_blob
-        # We assume email, username, password exist now (or are empty strings)
-        search_cols = ["email", "username", "password", "hash"]
-        # Only use cols that exist
-        valid_search_cols = [c for c in search_cols if c in existing_cols or c in rename_map.values()]
-        
-        lazy_df = lazy_df.with_columns(
-            build_search_blob_expr(valid_search_cols)
+        # Start Shared Worker
+        worker_thread = threading.Thread(
+            target=self._ingestion_worker, 
+            args=(upload_queue, stop_event, error_container), 
+            daemon=True
         )
-        
-        # Add import_date
-        lazy_df = lazy_df.with_columns(pl.lit(None).cast(pl.Datetime).alias("import_date"))
+        worker_thread.start()
 
-        # Final Select to enforce schema order
-        exprs = []
-        for name, dtype in CANONICAL_SCHEMA.items():
-            exprs.append(pl.col(name).cast(dtype))
-
-        lazy_df = lazy_df.select(exprs)
-
-        # 4. Materialize to Parquet
-        parquet_path = staging_dir / f"{input_path.stem}.parquet"
         try:
-            self.file_storage.write_parquet(lazy_df, parquet_path)
-            log_info(f"Arquivo intermediário gerado: {parquet_path}")
+            # Use the iterator to stream batches
+            reader = pl.read_csv_batched(
+                input_path, 
+                batch_size=batch_size, 
+                ignore_errors=True,
+                infer_schema_length=10000,
+                low_memory=True
+            )
+            
+            while True:
+                if stop_event.is_set():
+                    break
+                
+                batches = reader.next_batches(1)
+                if not batches:
+                    break
+                
+                df = batches[0]
+                chunk_idx += 1
+                
+                # --- TRANSFORMATION LOGIC (Per Batch) ---
+                # 1. Rename
+                # Only rename columns that exist in this batch (safety)
+                valid_renames = {k: v for k, v in rename_map.items() if k in df.columns}
+                df = df.rename(valid_renames)
+                
+                # 2. Add Missing/Metadata Columns
+                target_cols = CANONICAL_SCHEMA.names()
+                
+                # Add source_file
+                df = df.with_columns(pl.lit(input_path.name).alias("source_file"))
+
+                # Ensure all target columns exist
+                current_cols = df.columns
+                cols_to_add = []
+                for col in target_cols:
+                    if col not in current_cols and col != "_search_blob":
+                        if col == "breach_date":
+                            cols_to_add.append(pl.lit(None).cast(pl.Date).alias(col))
+                        elif col == "import_date":
+                            cols_to_add.append(pl.lit(None).cast(pl.Datetime).alias(col))
+                        else:
+                            cols_to_add.append(pl.lit("").alias(col))
+                
+                if cols_to_add:
+                    df = df.with_columns(cols_to_add)
+
+                # 3. Build Search Blob
+                search_cols = ["email", "username", "password", "hash"]
+                valid_search_cols = [c for c in search_cols if c in df.columns]
+                
+                df = df.with_columns(
+                    build_search_blob_expr(valid_search_cols)
+                )
+                
+                # 4. Final Select & Cast
+                exprs = [pl.col(name).cast(dtype) for name, dtype in CANONICAL_SCHEMA.items()]
+                df = df.select(exprs)
+
+                # --- PUSH TO WORKER ---
+                try:
+                    arrow_table = df.to_arrow()
+                    self._push_to_worker(upload_queue, (arrow_table, "breach_records"), stop_event, error_container)
+                except Exception as e:
+                    log_error(f"Failed to process structured chunk {chunk_idx}: {e}")
+                    q_path = staging_dir.parent / "quarantine" / f"failed_struct_{input_path.stem}_{chunk_idx}.parquet"
+                    df.write_parquet(q_path)
+
+            # End of Stream
+            if not stop_event.is_set():
+                self._push_to_worker(upload_queue, None, stop_event, error_container)
+                upload_queue.join()
+                worker_thread.join()
+
+            if error_container:
+                raise error_container[0]
+
+            log_success(f"Ingestão Estruturada concluída para {input_path}. Total chunks: {chunk_idx}")
+
+        except KeyboardInterrupt:
+            log_warning("Ingestão interrompida pelo usuário.")
+            stop_event.set()
+            raise
         except Exception as e:
-            log_error(f"Falha ao converter para Parquet: {e}. Arquivo pode estar muito corrompido.")
+            log_error(f"Erro durante processamento de {input_path}: {e}")
             self._move_to_quarantine(input_path, quarantine_dir)
-            return
+            stop_event.set()
 
-        # 5. Ingest to ClickHouse
+    def _ingestion_worker(self, q: queue.Queue, error_event: threading.Event, error_container: list) -> None:
+        """Background worker to consume Arrow tables and insert into ClickHouse."""
         try:
-            self._ingest_parquet_to_clickhouse(parquet_path, batch_size)
-            log_success(f"Ingestão concluída para {input_path}")
+            while True:
+                try:
+                    # Check periodically to allow exit if main thread sets error_event
+                    item = q.get(timeout=1.0)
+                except queue.Empty:
+                    if error_event.is_set():
+                        break
+                    continue
+
+                if item is None: # Sentinel
+                    q.task_done()
+                    break
+                
+                table, table_name = item
+                try:
+                    self.repository.insert_arrow_batch(table, table_name)
+                except Exception as e:
+                    log_error(f"Worker Upload Failed: {e}")
+                    error_container.append(e)
+                    error_event.set()
+                    
+                    # Drain queue to unblock producer
+                    try:
+                        while True:
+                            q.get_nowait()
+                            q.task_done()
+                    except queue.Empty:
+                        pass
+                    # We continue loop to hit error_event check or break, 
+                    # but actually we should stop consuming if error occurred to be safe.
+                    break 
+                finally:
+                    # Safe call if we haven't already drained it (which calls task_done)
+                    # But if we drained, we called task_done on future items. 
+                    # For CURRENT item, we must call task_done.
+                    # The drain logic is tricky. 
+                    # Simpler logic: Call task_done for THIS item. Then if error, drain rest.
+                    if not error_event.is_set():
+                        q.task_done()
+                    # If error set, we might have drained. Just leave it.
+                    
         except Exception as e:
-            log_error(f"Erro na ingestão para o banco: {e}")
+            # Catch-all for worker internal logic crash
+            if not error_container:
+                error_container.append(e)
+            error_event.set()
+
+    def _push_to_worker(self, q, item, stop_event, error_container):
+        """
+        Safely pushes to queue. Prevents deadlock if worker dies.
+        """
+        while not stop_event.is_set():
+            try:
+                q.put(item, timeout=0.5)
+                return
+            except queue.Full:
+                continue
+        
+        # If we exit loop, worker is dead
+        if error_container:
+            raise error_container[0]
+        raise RuntimeError("Worker stopped unexpectedly")
 
     def process_stream(self, stream: Any, staging_dir: Path, quarantine_dir: Path, batch_size: int, source_name: str = "stdin", format: str = "auto", no_check: bool = False) -> None:
         """
-        Ingests data from a stream (stdin/pipe). Always assumes Raw Line mode.
-        If format="email:pass", skips regex validation for speed (Optimistic Mode).
-        If no_check=True, skips even simple validation (Fastest).
+        Ingests data from a stream (stdin/pipe) using a Producer-Consumer thread pattern.
+        Producer (Main Thread): Reads stream -> Parsing -> Validation -> Queue
+        Consumer (Worker Thread): Queue -> ClickHouse Upload
         """
         import warnings
+        
         # Suppress Polars "CSV malformed" warnings typical for parallel parsing of ragged data
         warnings.filterwarnings("ignore", message="CSV malformed")
         
         chunk_idx = 0
         email_pattern = r"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})"
         
-        log_info(f"Iniciando ingestão via Stream ({source_name}) [Format: {format}]...")
+        # --- THREADING SETUP ---
+        # Queue Maxsize = 3 batches (~3GB - 6GB RAM buffer)
+        upload_queue = queue.Queue(maxsize=3)
+        stop_event = threading.Event()
+        error_container = []
+
+        # Start Shared Worker
+        worker_thread = threading.Thread(
+            target=self._ingestion_worker, 
+            args=(upload_queue, stop_event, error_container), 
+            daemon=True
+        )
+        worker_thread.start()
+        
+        log_info(f"Iniciando ingestão Paralela (Producer-Consumer) via Stream ({source_name}) [Format: {format}]...")
         
         try:
             for df in self.file_storage.read_stream_batched(stream, batch_size=batch_size):
+                if stop_event.is_set():
+                    break # Error happened
+
                 chunk_idx += 1
                 if chunk_idx % 10 == 0:
                      log_info(f"Processando chunk {chunk_idx} ({df.height} linhas)...")
@@ -152,24 +278,19 @@ class BreachIngestor:
                     if not no_check:
                         # Validation Regex (Simple/Fast)
                         validation_pattern = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
-                        
-                        # Split into Good and Bad
                         good_df = df.filter(pl.col("email").str.contains(validation_pattern))
                         bad_df = df.filter(~pl.col("email").str.contains(validation_pattern))
                         
-                        # Handle Bad Rows (Quarantine)
                         if bad_df.height > 0:
                             q_path = quarantine_dir / f"quarantine_{source_name}_{chunk_idx}.parquet"
                             try:
                                 bad_df.select(["raw_line"]).write_parquet(q_path, compression="zstd")
-                            except Exception as e:
-                                log_error(f"Failed to write quarantine chunk: {e}")
+                            except Exception: pass
                         
                         df = good_df
-                    # else: no_check is True, accept all rows as-is (except null email which is filtered later)
                     
                 else:
-                    # Robust Path: Hybrid Split/Regex
+                    # Robust Path
                     df = df.with_columns(
                          pl.when(pl.col("part_0").str.contains(email_pattern))
                            .then(pl.col("part_0"))
@@ -181,9 +302,6 @@ class BreachIngestor:
                            .otherwise(pl.lit("")) 
                            .alias("password")
                     )
-                    # In robust mode, we already filtered null emails later, 
-                    # but we could also quarantine them if we wanted.
-                    # For now, keep existing behavior for 'auto' mode.
 
                 df = df.filter(pl.col("email").is_not_null())
                 
@@ -202,41 +320,67 @@ class BreachIngestor:
                 
                 df = df.select(CANONICAL_SCHEMA.names())
                 
-                # Write Chunk to Parquet
-                chunk_path = staging_dir / f"{source_name}_chunk_{chunk_idx}.parquet"
+                # Conversion to Arrow (Main Thread)
                 try:
-                    df.write_parquet(chunk_path, compression="zstd")
-                    self._ingest_parquet_to_clickhouse(chunk_path, batch_size)
-                finally:
-                    if chunk_path.exists():
-                        chunk_path.unlink()
+                    arrow_table = df.to_arrow()
+                    # Safe Push to shared worker queue
+                    self._push_to_worker(upload_queue, (arrow_table, "breach_records"), stop_event, error_container)
+                except Exception as e:
+                    log_error(f"Failed to convert chunk {chunk_idx}: {e}")
             
-            log_success(f"Ingestão via Stream concluída. Total chunks: {chunk_idx}")
+            # End of Stream
+            if not stop_event.is_set():
+                self._push_to_worker(upload_queue, None, stop_event, error_container)
+                upload_queue.join()
+            
+            if error_container:
+                raise error_container[0]
+
+            log_success(f"Ingestão Paralela via Stream concluída. Total chunks: {chunk_idx}")
             
         except KeyboardInterrupt:
             log_warning("Ingestão interrompida pelo usuário.")
+            stop_event.set()
             raise
         except Exception as e:
             log_error(f"Erro durante ingestão de stream: {e}")
+            stop_event.set()
+
 
     def _process_raw_streaming(self, input_path: Path, staging_dir: Path, batch_size: int, format: str = "auto", no_check: bool = False) -> None:
         """
-        Ingests a raw file in chunks to minimize memory usage.
-        Reads lines -> Extract Regex -> Write Temp Parquet -> Ingest -> Delete Temp Parquet
+        Ingests a raw file in chunks using Parallel Producer-Consumer pattern.
+        Main Thread: Reads lines -> Extract Regex -> Convert to Arrow
+        Worker Thread: Uploads Arrow Batch to ClickHouse
         """
         chunk_idx = 0
         email_pattern = r"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})"
         
+        # --- THREADING SETUP ---
+        upload_queue = queue.Queue(maxsize=3)
+        stop_event = threading.Event()
+        error_container = []
+
+        # Start Shared Worker
+        worker_thread = threading.Thread(
+            target=self._ingestion_worker, 
+            args=(upload_queue, stop_event, error_container), 
+            daemon=True
+        )
+        worker_thread.start()
+        
         try:
             # batch_size passed here is from config (e.g. 5,000,000)
             for batch_data in self.file_storage.read_lines_batched(input_path, batch_size=batch_size):
+                if stop_event.is_set():
+                    break
+
                 chunk_idx += 1
                 
                 # Check if batch_data is already a DataFrame (optimized path) or list (fallback)
                 if isinstance(batch_data, pl.DataFrame):
                     df = batch_data
                     if "raw_line" not in df.columns:
-                         # Ensure column name consistency
                          df.columns = ["raw_line"]
                 else:
                     df = pl.DataFrame({"raw_line": batch_data})
@@ -284,10 +428,9 @@ class BreachIngestor:
 
                 df = df.with_columns([
                     pl.lit(input_path.name).alias("source_file"),
-                    # Search blob includes raw line to capture context
                     pl.col("raw_line").str.to_lowercase().alias("_search_blob"),
-                    # Create username col defaulting to empty
                     pl.lit("").alias("username"),
+                    pl.lit("").alias("password"),
                     pl.lit("").alias("hash"),
                     pl.lit("").alias("salt"),
                     pl.lit(None).cast(pl.Date).alias("breach_date"),
@@ -297,36 +440,76 @@ class BreachIngestor:
                 # Select canonical columns
                 df = df.select(CANONICAL_SCHEMA.names())
                 
-                # Write Chunk to Parquet
-                chunk_path = staging_dir / f"{input_path.stem}_chunk_{chunk_idx}.parquet"
+                # --- PARALLEL INGESTION POINT ---
                 try:
-                    df.write_parquet(chunk_path, compression="zstd")
-                    
-                    # Ingest Chunk
-                    self._ingest_parquet_to_clickhouse(chunk_path, batch_size)
-                finally:
-                    # Always try to remove the chunk, success or failure/interruption
-                    if chunk_path.exists():
-                        chunk_path.unlink()
+                    arrow_table = df.to_arrow()
+                    # Push to Worker
+                    self._push_to_worker(upload_queue, (arrow_table, "breach_records"), stop_event, error_container)
+                except Exception as e:
+                    log_error(f"Failed to ingest chunk {chunk_idx}: {e}")
+                    q_path = staging_dir.parent / "quarantine" / f"failed_ingest_{input_path.stem}_{chunk_idx}.parquet"
+                    df.write_parquet(q_path)
             
-            log_success(f"Ingestão via Streaming concluída para {input_path}. Total chunks: {chunk_idx}")
+            # End of Stream
+            if not stop_event.is_set():
+                self._push_to_worker(upload_queue, None, stop_event, error_container)
+                upload_queue.join()
+                # worker_thread.join() # Daemon threads don't strictly need join if we ensured queue is empty, but good practice.
+            
+            if error_container:
+                raise error_container[0]
+
+            log_success(f"Ingestão Paralela via Streaming concluída para {input_path}. Total chunks: {chunk_idx}")
             
         except KeyboardInterrupt:
             log_warning("Ingestão interrompida pelo usuário.")
-            # Verify if last chunk exists and delete it
-            # (Handled by finally block of the loop iteration if interrupt happened inside try)
-            # But if interrupt happened outside try (e.g. during Polars processing), we can't easily know the path.
-            # We can rely on the fact that we clean up immediately.
-            # But to be safe, we could register a cleanup list.
+            stop_event.set()
             raise
         except Exception as e:
             log_error(f"Erro durante streaming raw de {input_path}: {e}")
             self._move_to_quarantine(input_path, staging_dir.parent / "quarantine")
+            stop_event.set()
 
     def _ingest_parquet_to_clickhouse(self, parquet_path: Path, batch_size: int) -> None:
-        for batch in self.file_storage.read_parquet_batches(parquet_path, batch_size):
-            table = pa.Table.from_batches([batch])
-            self.repository.insert_arrow_batch(table, "breach_records")
+        """
+        Reads a Parquet file and ingests chunks using the shared worker pattern.
+        """
+        # --- THREADING SETUP ---
+        upload_queue = queue.Queue(maxsize=3)
+        stop_event = threading.Event()
+        error_container = []
+
+        # Start Shared Worker
+        worker_thread = threading.Thread(
+            target=self._ingestion_worker, 
+            args=(upload_queue, stop_event, error_container), 
+            daemon=True
+        )
+        worker_thread.start()
+        
+        try:
+            for batch in self.file_storage.read_parquet_batches(parquet_path, batch_size):
+                if stop_event.is_set():
+                    break
+                
+                try:
+                    table = pa.Table.from_batches([batch])
+                    self._push_to_worker(upload_queue, (table, "breach_records"), stop_event, error_container)
+                except Exception as e:
+                    log_error(f"Failed to process parquet batch: {e}")
+                    raise e
+            
+            # End
+            if not stop_event.is_set():
+                self._push_to_worker(upload_queue, None, stop_event, error_container)
+                upload_queue.join()
+            
+            if error_container:
+                raise error_container[0]
+                
+        except Exception as e:
+            stop_event.set()
+            raise e
             
     def _move_to_quarantine(self, file_path: Path, quarantine_dir: Path) -> None:
         try:
