@@ -16,6 +16,34 @@ class MockRepository:
     def execute_ddl(self, ddl_statement: str) -> None:
         self.ddl_calls.append(ddl_statement)
 
+def test_custom_source_name(temp_dirs):
+    raw, staging, quarantine = temp_dirs
+    
+    # Create sample CSV
+    csv_path = raw / "generic_leak.csv"
+    csv_content = "email,password\nuser@test.com,pass123"
+    csv_path.write_text(csv_content)
+    
+    repo = MockRepository()
+    fs = LocalFileSystemAdapter()
+    ingestor = BreachIngestor(repo, fs)
+    
+    # Process with custom source name
+    ingestor.process_file(
+        csv_path, 
+        staging, 
+        quarantine, 
+        custom_source_name="CustomDB_2024"
+    )
+    
+    assert len(repo.batches) > 0
+    table, _ = repo.batches[0]
+    df = pl.from_arrow(table)
+    
+    assert "source_file" in df.columns
+    assert df["source_file"][0] == "CustomDB_2024"
+    assert df["source_file"][0] != "generic_leak.csv"
+
 def test_ingest_flow_valid_file(temp_dirs):
     raw, staging, quarantine = temp_dirs
     
@@ -30,18 +58,14 @@ def test_ingest_flow_valid_file(temp_dirs):
     
     ingestor.process_file(csv_path, staging, quarantine)
     
-    # Verify staging file created
-    assert (staging / "test_leak.parquet").exists()
-    
-    # Verify repository received data
+    # Verify repository received data (Direct Ingestion)
     assert len(repo.batches) > 0
     table, name = repo.batches[0]
     assert name == "breach_records"
     assert table.num_rows == 2
     
-    # Verify content via Polars
-    # We can read the parquet file back to check normalization
-    df = pl.read_parquet(staging / "test_leak.parquet")
+    # Verify content via Arrow Table
+    df = pl.from_arrow(table)
     assert "source_file" in df.columns
     assert df["source_file"][0] == "test_leak.csv"
     assert "_search_blob" in df.columns
@@ -61,8 +85,11 @@ def test_ingest_flow_dirty_columns(temp_dirs):
     
     ingestor.process_file(csv_path, staging, quarantine)
     
-    # Verify it was mapped correctly
-    df = pl.read_parquet(staging / "dirty.parquet")
+    # Verify it was mapped correctly (Direct Ingestion)
+    assert len(repo.batches) > 0
+    table, _ = repo.batches[0]
+    df = pl.from_arrow(table)
+    
     assert "email" in df.columns
     assert "username" in df.columns
     assert "password" in df.columns

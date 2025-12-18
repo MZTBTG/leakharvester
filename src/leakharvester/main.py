@@ -18,10 +18,7 @@ CREATE TABLE IF NOT EXISTS vault.breach_records
     `import_date` DateTime DEFAULT now() CODEC(Delta(4), ZSTD(9)),
     `email` String CODEC(ZSTD(9)),
     `username` String CODEC(ZSTD(9)),
-    `password` String CODEC(ZSTD(9)),
-    `hash` String CODEC(ZSTD(9)),
-    `salt` String CODEC(ZSTD(9)),
-    `_search_blob` String CODEC(ZSTD(9))
+    `password` String CODEC(ZSTD(9))
 )
 ENGINE = MergeTree
 ORDER BY (email, source_file)
@@ -29,7 +26,8 @@ PARTITION BY toYYYYMM(breach_date)
 SETTINGS
     index_granularity = 8192,
     max_bytes_to_merge_at_min_space_in_pool = 10485760,
-    min_bytes_for_wide_part = 10485760;
+    min_bytes_for_wide_part = 10485760,
+    old_parts_lifetime = 60;
 """
 
 @app.command()
@@ -70,13 +68,7 @@ def optimize_db():
     try:
         log_info("Applying Turbo Mode: 20 Threads, 30GB RAM Limit...")
         
-        # 1. Add Indexes (Metadata only, fast)
-        log_info("Defining Search Index (tokenbf_v1)...")
-        repo.client.command(
-            "ALTER TABLE vault.breach_records ADD INDEX IF NOT EXISTS idx_search_blob _search_blob TYPE tokenbf_v1(32768, 3, 0) GRANULARITY 1",
-            settings=turbo_settings
-        )
-        
+        # 1. Add Indexes
         log_info("Defining Email Index (bloom_filter)...")
         repo.client.command(
             "ALTER TABLE vault.breach_records ADD INDEX IF NOT EXISTS idx_email email TYPE bloom_filter(0.01) GRANULARITY 1",
@@ -85,7 +77,6 @@ def optimize_db():
         
         # 2. Trigger Materialization (Heavy Work)
         log_info("Triggering Materialization (CPU/IO Bound)...")
-        repo.client.command("ALTER TABLE vault.breach_records MATERIALIZE INDEX idx_search_blob", settings=turbo_settings)
         repo.client.command("ALTER TABLE vault.breach_records MATERIALIZE INDEX idx_email", settings=turbo_settings)
         
         # 3. Monitor Progress
@@ -164,15 +155,11 @@ def switch_mode(mode: str = typer.Argument(..., help="Index mode: 'eco' (Space-S
     try:
         # 1. Drop Existing Indexes
         log_info("Dropping existing indexes...")
-        repo.client.command("ALTER TABLE vault.breach_records DROP INDEX IF EXISTS idx_search_blob", settings=turbo_settings)
         repo.client.command("ALTER TABLE vault.breach_records DROP INDEX IF EXISTS idx_email", settings=turbo_settings)
         
         # 2. Add New Indexes
         log_info("Defining new indexes...")
-        repo.client.command(
-            f"ALTER TABLE vault.breach_records ADD INDEX idx_search_blob _search_blob TYPE tokenbf_v1({bf_size}, 3, 0) GRANULARITY 1",
-            settings=turbo_settings
-        )
+        
         # Email index usually stays same, but let's rebuild to be clean
         repo.client.command(
             "ALTER TABLE vault.breach_records ADD INDEX idx_email email TYPE bloom_filter(0.01) GRANULARITY 1",
@@ -181,7 +168,6 @@ def switch_mode(mode: str = typer.Argument(..., help="Index mode: 'eco' (Space-S
         
         # 3. Materialize
         log_info("Materializing new indexes (This will take time)...")
-        repo.client.command("ALTER TABLE vault.breach_records MATERIALIZE INDEX idx_search_blob", settings=turbo_settings)
         repo.client.command("ALTER TABLE vault.breach_records MATERIALIZE INDEX idx_email", settings=turbo_settings)
         
         # 4. Monitor
@@ -232,16 +218,9 @@ def search(
     console = Console()
     repo = ClickHouseAdapter()
     
-    # Smart Tokenization Strategy
-    tokens = [t for t in re.split(r'[^a-zA-Z0-9]', query) if t]
-    
-    if not tokens:
-        log_error("Query contains no valid tokens.")
-        return
-
     # Build WHERE clause
-    conditions = [f"hasToken(_search_blob, '{t.lower()}')" for t in tokens]
-    where_clause = " AND ".join(conditions)
+    # Simple multi-column ILIKE search
+    where_clause = f"email ILIKE '%{query}%' OR username ILIKE '%{query}%' OR password ILIKE '%{query}%'"
     
     sql = f"""
         SELECT 
@@ -293,7 +272,8 @@ def wipe(
             return
         
         log_info("Executing TRUNCATE TABLE (Nuclear Option)...")
-        repo.client.command("TRUNCATE TABLE vault.breach_records")
+        # Bypass 50GB drop limit by setting max_table_size_to_drop to 0 (unlimited)
+        repo.client.command("TRUNCATE TABLE vault.breach_records", settings={'max_table_size_to_drop': 0})
         log_success("Database truncated. Disk space should be reclaimed immediately.")
         return
 
@@ -342,10 +322,12 @@ def repair():
 def ingest(
     file: Path = typer.Option(None, help="Specific file to ingest"),
     stdin: bool = typer.Option(False, help="Ingest from standard input (pipe)"),
+    source_name: str = typer.Option(None, "--source-name", help="Custom name for the data source"),
     format: str = typer.Option("auto", help="Format hint: 'auto' or 'email:pass' (faster)"),
     no_check: bool = typer.Option(False, help="Disable email validation in Fast Path (Dangerous but Fastest)"),
-    batch_size: int = typer.Option(None, help="Batch size (rows) per chunk. Defaults to config (5M)."),
-    watch: bool = typer.Option(False, help="Watch raw directory for new files")
+    batch_size: int = typer.Option(None, help="Batch size (rows) per chunk. Defaults to config (50K)."),
+    watch: bool = typer.Option(False, help="Watch raw directory for new files"),
+    workers: int = typer.Option(1, "--workers", "-w", help="Number of concurrent upload workers. Defaults to 1.")
 ):
     """Ingests data from raw directory, specific file, or stdin pipe."""
     import sys
@@ -363,11 +345,30 @@ def ingest(
             log_error("Stdin is empty. Pipe data into this command: cat file | leakharvester ingest --stdin")
             return
         
-        ingestor.process_stream(sys.stdin, settings.STAGING_DIR, settings.QUARANTINE_DIR, batch_size=final_batch_size, format=format, no_check=no_check)
+        final_source_name = source_name or "stdin"
+        ingestor.process_stream(
+            sys.stdin, 
+            settings.STAGING_DIR, 
+            settings.QUARANTINE_DIR, 
+            batch_size=final_batch_size, 
+            source_name=final_source_name, 
+            format=format, 
+            no_check=no_check,
+            num_workers=workers
+        )
         return
 
     if file:
-        ingestor.process_file(file, settings.STAGING_DIR, settings.QUARANTINE_DIR, batch_size=final_batch_size, format=format, no_check=no_check)
+        ingestor.process_file(
+            file, 
+            settings.STAGING_DIR, 
+            settings.QUARANTINE_DIR, 
+            batch_size=final_batch_size, 
+            format=format, 
+            no_check=no_check, 
+            custom_source_name=source_name,
+            num_workers=workers
+        )
     else:
         # Process all files in raw
         # In real-world, we'd use robust walking or a queue.
@@ -379,7 +380,16 @@ def ingest(
 
         for f in files:
             if f.is_file():
-                ingestor.process_file(f, settings.STAGING_DIR, settings.QUARANTINE_DIR, batch_size=final_batch_size, format=format, no_check=no_check)
+                ingestor.process_file(
+                    f, 
+                    settings.STAGING_DIR, 
+                    settings.QUARANTINE_DIR, 
+                    batch_size=final_batch_size, 
+                    format=format, 
+                    no_check=no_check, 
+                    custom_source_name=source_name,
+                    num_workers=workers
+                )
 
 if __name__ == "__main__":
     app()

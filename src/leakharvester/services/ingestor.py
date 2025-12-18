@@ -22,9 +22,11 @@ class BreachIngestor:
         quarantine_dir: Path,
         batch_size: int = 500_000,
         format: str = "auto",
-        no_check: bool = False
+        no_check: bool = False,
+        custom_source_name: Optional[str] = None,
+        num_workers: int = 1
     ) -> None:
-        log_info(f"Iniciando processamento de: {input_path} [Format: {format}, NoCheck: {no_check}]")
+        log_info(f"Iniciando processamento de: {input_path} [Format: {format}, NoCheck: {no_check}, Workers: {num_workers}]")
         
         # Initial peek to detect columns/schema
         try:
@@ -41,7 +43,7 @@ class BreachIngestor:
         if not rename_map:
              if "raw_line" in columns or len(columns) == 1:
                  log_warning(f"Modo RAW detectado para {input_path}. Alternando para Ingestão em Streaming.")
-                 self._process_raw_streaming(input_path, staging_dir, batch_size, format=format, no_check=no_check)
+                 self._process_raw_streaming(input_path, staging_dir, batch_size, format=format, no_check=no_check, custom_source_name=custom_source_name, num_workers=num_workers)
                  return
              else:
                  log_warning(f"Não foi possível mapear colunas críticas em {input_path}. Movendo para quarentena.")
@@ -52,17 +54,20 @@ class BreachIngestor:
         chunk_idx = 0
         
         # Threading Setup
-        upload_queue = queue.Queue(maxsize=3)
+        upload_queue = queue.Queue(maxsize=num_workers * 2)
         stop_event = threading.Event()
         error_container = []
 
-        # Start Shared Worker
-        worker_thread = threading.Thread(
-            target=self._ingestion_worker, 
-            args=(upload_queue, stop_event, error_container), 
-            daemon=True
-        )
-        worker_thread.start()
+        # Start Shared Workers
+        workers = []
+        for _ in range(num_workers):
+            t = threading.Thread(
+                target=self._ingestion_worker, 
+                args=(upload_queue, stop_event, error_container), 
+                daemon=True
+            )
+            t.start()
+            workers.append(t)
 
         try:
             # Use the iterator to stream batches
@@ -95,13 +100,14 @@ class BreachIngestor:
                 target_cols = CANONICAL_SCHEMA.names()
                 
                 # Add source_file
-                df = df.with_columns(pl.lit(input_path.name).alias("source_file"))
+                source_label = custom_source_name or input_path.name
+                df = df.with_columns(pl.lit(source_label).alias("source_file"))
 
                 # Ensure all target columns exist
                 current_cols = df.columns
                 cols_to_add = []
                 for col in target_cols:
-                    if col not in current_cols and col != "_search_blob":
+                    if col not in current_cols:
                         if col == "breach_date":
                             cols_to_add.append(pl.lit(None).cast(pl.Date).alias(col))
                         elif col == "import_date":
@@ -112,13 +118,13 @@ class BreachIngestor:
                 if cols_to_add:
                     df = df.with_columns(cols_to_add)
 
-                # 3. Build Search Blob
-                search_cols = ["email", "username", "password", "hash"]
-                valid_search_cols = [c for c in search_cols if c in df.columns]
+                # 3. Build Search Blob (Deprecated/Removed)
+                # search_cols = ["email", "username", "password", "hash"]
+                # valid_search_cols = [c for c in search_cols if c in df.columns]
                 
-                df = df.with_columns(
-                    build_search_blob_expr(valid_search_cols)
-                )
+                # df = df.with_columns(
+                #    build_search_blob_expr(valid_search_cols)
+                # )
                 
                 # 4. Final Select & Cast
                 exprs = [pl.col(name).cast(dtype) for name, dtype in CANONICAL_SCHEMA.items()]
@@ -135,9 +141,13 @@ class BreachIngestor:
 
             # End of Stream
             if not stop_event.is_set():
-                self._push_to_worker(upload_queue, None, stop_event, error_container)
+                # Signal all workers
+                for _ in range(num_workers):
+                    self._push_to_worker(upload_queue, None, stop_event, error_container)
+                
                 upload_queue.join()
-                worker_thread.join()
+                for t in workers:
+                    t.join()
 
             if error_container:
                 raise error_container[0]
@@ -152,6 +162,9 @@ class BreachIngestor:
             log_error(f"Erro durante processamento de {input_path}: {e}")
             self._move_to_quarantine(input_path, quarantine_dir)
             stop_event.set()
+        finally:
+             for t in workers:
+                t.join(timeout=2.0)
 
     def _ingestion_worker(self, q: queue.Queue, error_event: threading.Event, error_container: list) -> None:
         """Background worker to consume Arrow tables and insert into ClickHouse."""
@@ -219,11 +232,11 @@ class BreachIngestor:
             raise error_container[0]
         raise RuntimeError("Worker stopped unexpectedly")
 
-    def process_stream(self, stream: Any, staging_dir: Path, quarantine_dir: Path, batch_size: int, source_name: str = "stdin", format: str = "auto", no_check: bool = False) -> None:
+    def process_stream(self, stream: Any, staging_dir: Path, quarantine_dir: Path, batch_size: int, source_name: str = "stdin", format: str = "auto", no_check: bool = False, num_workers: int = 1) -> None:
         """
         Ingests data from a stream (stdin/pipe) using a Producer-Consumer thread pattern.
         Producer (Main Thread): Reads stream -> Parsing -> Validation -> Queue
-        Consumer (Worker Thread): Queue -> ClickHouse Upload
+        Consumer (Worker Threads): Queue -> ClickHouse Upload
         """
         import warnings
         
@@ -234,20 +247,23 @@ class BreachIngestor:
         email_pattern = r"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})"
         
         # --- THREADING SETUP ---
-        # Queue Maxsize = 3 batches (~3GB - 6GB RAM buffer)
-        upload_queue = queue.Queue(maxsize=3)
+        # Queue Maxsize = 2 batches per worker (~6GB - 12GB RAM buffer depending on batch size)
+        upload_queue = queue.Queue(maxsize=num_workers * 2)
         stop_event = threading.Event()
         error_container = []
 
-        # Start Shared Worker
-        worker_thread = threading.Thread(
-            target=self._ingestion_worker, 
-            args=(upload_queue, stop_event, error_container), 
-            daemon=True
-        )
-        worker_thread.start()
+        # Start Shared Workers
+        workers = []
+        for _ in range(num_workers):
+            t = threading.Thread(
+                target=self._ingestion_worker, 
+                args=(upload_queue, stop_event, error_container), 
+                daemon=True
+            )
+            t.start()
+            workers.append(t)
         
-        log_info(f"Iniciando ingestão Paralela (Producer-Consumer) via Stream ({source_name}) [Format: {format}]...")
+        log_info(f"Iniciando ingestão Paralela (Producer-Consumers) via Stream ({source_name}) [Format: {format}] [Workers: {num_workers}]...")
         
         try:
             for df in self.file_storage.read_stream_batched(stream, batch_size=batch_size):
@@ -310,10 +326,7 @@ class BreachIngestor:
 
                 df = df.with_columns([
                     pl.lit(source_name).alias("source_file"),
-                    pl.col("raw_line").str.to_lowercase().alias("_search_blob"),
                     pl.lit("").alias("username"),
-                    pl.lit("").alias("hash"),
-                    pl.lit("").alias("salt"),
                     pl.lit(None).cast(pl.Date).alias("breach_date"),
                     pl.lit(None).cast(pl.Datetime).alias("import_date")
                 ])
@@ -330,8 +343,13 @@ class BreachIngestor:
             
             # End of Stream
             if not stop_event.is_set():
-                self._push_to_worker(upload_queue, None, stop_event, error_container)
+                # Signal all workers to stop
+                for _ in range(num_workers):
+                    self._push_to_worker(upload_queue, None, stop_event, error_container)
+                
                 upload_queue.join()
+                for t in workers:
+                    t.join()
             
             if error_container:
                 raise error_container[0]
@@ -340,14 +358,19 @@ class BreachIngestor:
             
         except KeyboardInterrupt:
             log_warning("Ingestão interrompida pelo usuário.")
+            log_warning(f"DADOS PARCIAIS: A ingestão de stream '{source_name}' foi interrompida. Dados parciais podem persistir.")
             stop_event.set()
             raise
         except Exception as e:
             log_error(f"Erro durante ingestão de stream: {e}")
             stop_event.set()
+        finally:
+            # Ensure workers terminate
+            for t in workers:
+                t.join(timeout=2.0)
 
 
-    def _process_raw_streaming(self, input_path: Path, staging_dir: Path, batch_size: int, format: str = "auto", no_check: bool = False) -> None:
+    def _process_raw_streaming(self, input_path: Path, staging_dir: Path, batch_size: int, format: str = "auto", no_check: bool = False, custom_source_name: Optional[str] = None, num_workers: int = 1) -> None:
         """
         Ingests a raw file in chunks using Parallel Producer-Consumer pattern.
         Main Thread: Reads lines -> Extract Regex -> Convert to Arrow
@@ -357,17 +380,20 @@ class BreachIngestor:
         email_pattern = r"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})"
         
         # --- THREADING SETUP ---
-        upload_queue = queue.Queue(maxsize=3)
+        upload_queue = queue.Queue(maxsize=num_workers * 2)
         stop_event = threading.Event()
         error_container = []
 
-        # Start Shared Worker
-        worker_thread = threading.Thread(
-            target=self._ingestion_worker, 
-            args=(upload_queue, stop_event, error_container), 
-            daemon=True
-        )
-        worker_thread.start()
+        # Start Shared Workers
+        workers = []
+        for _ in range(num_workers):
+            t = threading.Thread(
+                target=self._ingestion_worker, 
+                args=(upload_queue, stop_event, error_container), 
+                daemon=True
+            )
+            t.start()
+            workers.append(t)
         
         try:
             # batch_size passed here is from config (e.g. 5,000,000)
@@ -426,13 +452,11 @@ class BreachIngestor:
                 if df.height == 0:
                     continue
 
+                source_label = custom_source_name or input_path.name
                 df = df.with_columns([
-                    pl.lit(input_path.name).alias("source_file"),
-                    pl.col("raw_line").str.to_lowercase().alias("_search_blob"),
+                    pl.lit(source_label).alias("source_file"),
                     pl.lit("").alias("username"),
                     pl.lit("").alias("password"),
-                    pl.lit("").alias("hash"),
-                    pl.lit("").alias("salt"),
                     pl.lit(None).cast(pl.Date).alias("breach_date"),
                     pl.lit(None).cast(pl.Datetime).alias("import_date")
                 ])
@@ -452,9 +476,13 @@ class BreachIngestor:
             
             # End of Stream
             if not stop_event.is_set():
-                self._push_to_worker(upload_queue, None, stop_event, error_container)
+                # Signal all workers
+                for _ in range(num_workers):
+                    self._push_to_worker(upload_queue, None, stop_event, error_container)
+                
                 upload_queue.join()
-                # worker_thread.join() # Daemon threads don't strictly need join if we ensured queue is empty, but good practice.
+                for t in workers:
+                    t.join()
             
             if error_container:
                 raise error_container[0]
@@ -463,12 +491,17 @@ class BreachIngestor:
             
         except KeyboardInterrupt:
             log_warning("Ingestão interrompida pelo usuário.")
+            log_warning(f"DADOS PARCIAIS: Os dados de '{input_path.name}' podem estar duplicados se você reexecutar. Considere limpar com 'leakharvester wipe {input_path.name}' antes.")
             stop_event.set()
             raise
         except Exception as e:
             log_error(f"Erro durante streaming raw de {input_path}: {e}")
             self._move_to_quarantine(input_path, staging_dir.parent / "quarantine")
             stop_event.set()
+        finally:
+            # Ensure workers are cleaned up
+            for t in workers:
+                t.join(timeout=2.0)
 
     def _ingest_parquet_to_clickhouse(self, parquet_path: Path, batch_size: int) -> None:
         """
@@ -552,13 +585,10 @@ class BreachIngestor:
                     # Enriched with missing cols
                     valid_df = valid_df.with_columns([
                         pl.lit(q_file.name).alias("source_file"),
-                        pl.col("raw_line").str.to_lowercase().alias("_search_blob"),
                         # We don't know password/user, so leave empty or extract more?
                         # For repair, simple email capture is good enough.
                         pl.lit("").alias("username"),
                         pl.lit("").alias("password"),
-                        pl.lit("").alias("hash"),
-                        pl.lit("").alias("salt"),
                         pl.lit(None).cast(pl.Date).alias("breach_date"),
                         pl.lit(None).cast(pl.Datetime).alias("import_date")
                     ])

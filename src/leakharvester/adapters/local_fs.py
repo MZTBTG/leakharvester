@@ -2,6 +2,9 @@ from pathlib import Path
 from typing import Any
 import shutil
 import polars as pl
+import threading
+import queue
+import io
 from leakharvester.ports.file_storage import FileStorage
 from leakharvester.domain.schemas import RAW_CSV_SCHEMA
 
@@ -114,23 +117,43 @@ class LocalFileSystemAdapter(FileStorage):
         # Assume 100 bytes per row (conservative for leaks)
         target_bytes = batch_size * 100 
         
+        # Use a Queue to decouple Reading (I/O) from Parsing (CPU)
+        chunk_queue = queue.Queue(maxsize=3)
+        
+        def _reader_thread(r_stream, q, t_bytes):
+            try:
+                while True:
+                    # Blocking Read
+                    chunk = r_stream.read(t_bytes)
+                    if not chunk:
+                        q.put(None) # Sentinel
+                        break
+                    
+                    # Read until newline to ensure complete rows
+                    remainder = r_stream.readline()
+                    if remainder:
+                        chunk += remainder
+                    
+                    # Put to queue (blocks if full)
+                    q.put(chunk)
+            except Exception:
+                q.put(None)
+
         try:
             # If stream has a 'buffer' attribute (like sys.stdin), use it for raw byte access
             raw_stream = getattr(stream, 'buffer', stream)
             
+            # Start Reader Thread
+            t = threading.Thread(target=_reader_thread, args=(raw_stream, chunk_queue, target_bytes), daemon=True)
+            t.start()
+            
             while True:
-                # Read a large chunk
-                chunk = raw_stream.read(target_bytes)
-                if not chunk:
+                # Retrieve from Queue (blocks if empty)
+                chunk = chunk_queue.get()
+                if chunk is None:
                     break
                 
-                # We likely stopped in the middle of a line. Read until newline.
-                remainder = raw_stream.readline()
-                if remainder:
-                    chunk += remainder
-                
                 # Wrap in BytesIO to make it seekable for Polars
-                import io
                 buffer = io.BytesIO(chunk)
                 
                 try:
@@ -151,6 +174,10 @@ class LocalFileSystemAdapter(FileStorage):
                     
                 except pl.exceptions.NoDataError:
                     pass
+                finally:
+                    # Cleanup logic
+                    del chunk
+                    del buffer
                 
         except Exception:
             # Fallback to line-by-line if binary read fails

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     CLICKHOUSE_DB: str = "vault"
     
     # Ingestion
-    BATCH_SIZE: int = 5_000_000
+    BATCH_SIZE: int = 50_000
     
     model_config = SettingsConfigDict(
         env_file=".env", 

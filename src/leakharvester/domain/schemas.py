@@ -21,9 +21,7 @@ CANONICAL_SCHEMA = pl.Schema({
     "email": pl.String,
     "username": pl.String,
     "password": pl.String,
-    "hash": pl.String,
-    "salt": pl.String,
-    "_search_blob": pl.String
+    "password": pl.String
 })
 
 # Columns required for a valid record (at least one of these must exist)
