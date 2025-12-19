@@ -55,7 +55,6 @@ class BreachIngestor:
         # Get existing columns from DB
         try:
             # We assume table is vault.breach_records based on main.py
-            # Ideally this should be configurable or passed in
             existing_cols = set(self.repository.get_columns("vault.breach_records"))
         except Exception as e:
             log_error(f"Failed to fetch schema from DB: {e}")
@@ -228,65 +227,17 @@ class BreachIngestor:
              for t in workers:
                 t.join(timeout=2.0)
 
-    def _ingestion_worker(self, q: queue.Queue, error_event: threading.Event, error_container: list) -> None:
-        """Background worker to consume Arrow tables and insert into ClickHouse."""
-        try:
-            while True:
-                try:
-                    item = q.get(timeout=1.0)
-                except queue.Empty:
-                    if error_event.is_set():
-                        break
-                    continue
-
-                if item is None: # Sentinel
-                    q.task_done()
-                    break
-                
-                table, table_name = item
-                try:
-                    self.repository.insert_arrow_batch(table, table_name)
-                except Exception as e:
-                    log_error(f"Worker Upload Failed: {e}")
-                    error_container.append(e)
-                    error_event.set()
-                    
-                    try:
-                        while True:
-                            q.get_nowait()
-                            q.task_done()
-                    except queue.Empty:
-                        pass
-                    break 
-                finally:
-                    if not error_event.is_set():
-                        q.task_done()
-                    
-        except Exception as e:
-            if not error_container:
-                error_container.append(e)
-            error_event.set()
-
-    def _push_to_worker(self, q, item, stop_event, error_container):
-        while not stop_event.is_set():
-            try:
-                q.put(item, timeout=0.5)
-                return
-            except queue.Full:
-                continue
-        
-        if error_container:
-            raise error_container[0]
-        raise RuntimeError("Worker stopped unexpectedly")
-
     def process_stream(self, stream: Any, staging_dir: Path, quarantine_dir: Path, batch_size: int, source_name: str = "stdin", format: str = "auto", no_check: bool = False, num_workers: int = 1) -> None:
         """
         Ingests data from a stream (stdin/pipe) using the dynamic logic.
         """
         import warnings
+        import time
         warnings.filterwarnings("ignore", message="CSV malformed")
         
         chunk_idx = 0
+        total_rows = 0
+        start_time = time.time()
         
         # 1. Parse Format & Validate Schema
         delimiter, columns = self._parse_format_string(format)
@@ -316,14 +267,13 @@ class BreachIngestor:
                     break 
 
                 chunk_idx += 1
+                total_rows += df.height
+                
                 if chunk_idx % 10 == 0:
-                     log_info(f"Processando chunk {chunk_idx} ({df.height} linhas)...")
+                     elapsed = time.time() - start_time
+                     log_info(f"Processando chunk {chunk_idx} ({total_rows} linhas)... {elapsed:.2f}s")
                 
                 # --- Dynamic Split Logic ---
-                # Split raw_line by delimiter. 'n' is num columns - 1
-                # If there are extra columns, they might stay in the last part or get truncated?
-                # Polars splitn uses strict count. 
-                
                 num_cols = len(columns)
                 df = df.with_columns(
                     pl.col("raw_line").str.splitn(delimiter, num_cols).alias("split_parts")
@@ -341,12 +291,10 @@ class BreachIngestor:
                 df = df.with_columns(exprs)
                 
                 # Filter rows where primary identity is null (e.g. email)
-                # If 'email' is in columns, we filter by it.
                 if "email" in columns:
                      df = df.filter(pl.col("email").is_not_null() & (pl.col("email") != ""))
                      
                      if not no_check:
-                        # Validation Regex
                         validation_pattern = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
                         bad_df = df.filter(~pl.col("email").str.contains(validation_pattern))
                         
@@ -368,27 +316,20 @@ class BreachIngestor:
                     pl.lit(None).cast(pl.Datetime).alias("import_date")
                 ])
                 
-                # Fill missing canonical columns with empty string if not present
+                # Fill missing canonical columns
                 target_cols = CANONICAL_SCHEMA.names()
                 current_cols = set(df.columns)
                 missing_exprs = []
                 for tc in target_cols:
                     if tc not in current_cols:
-                         if tc == "breach_date" or tc == "import_date": continue # Already added
+                         if tc == "breach_date" or tc == "import_date": continue 
                          missing_exprs.append(pl.lit("").alias(tc))
                 
                 if missing_exprs:
                     df = df.with_columns(missing_exprs)
                 
-                # Select ALL valid columns (Canonical + Dynamic Extras)
-                # We need to intersect with DB schema ideally, but we already validated schema.
-                # So we select everything that isn't temporary.
-                
-                # Identify columns to keep: Canonical + (Dynamic - 'null')
+                # Select Final Columns
                 cols_to_keep = list(set(CANONICAL_SCHEMA.names()) | (set(columns) - {"null"}))
-                
-                # Polars select, allowing strict=False or just explicit list
-                # We trust our construction
                 final_df = df.select([c for c in cols_to_keep if c in df.columns])
                 
                 # Push
@@ -405,11 +346,12 @@ class BreachIngestor:
                 upload_queue.join()
                 for t in workers:
                     t.join()
-            
+
             if error_container:
                 raise error_container[0]
-
-            log_success(f"Ingestão via Stream concluída. Total chunks: {chunk_idx}")
+            
+            total_time = time.time() - start_time
+            log_success(f"Ingestão via Stream concluída. Total chunks: {chunk_idx} | Linhas: {total_rows} | Tempo: {total_time:.2f}s")
             
         except KeyboardInterrupt:
             log_warning("Ingestão interrompida pelo usuário.")
@@ -422,12 +364,14 @@ class BreachIngestor:
             for t in workers:
                 t.join(timeout=2.0)
 
-
     def _process_raw_streaming(self, input_path: Path, staging_dir: Path, batch_size: int, format: str = "auto", no_check: bool = False, custom_source_name: Optional[str] = None, num_workers: int = 1) -> None:
         """
         Ingests a raw file in chunks using Parallel Producer-Consumer pattern with Dynamic Format support.
         """
+        import time
         chunk_idx = 0
+        total_rows = 0
+        start_time = time.time()
         
         # 1. Parse Format & Validate
         delimiter, columns = self._parse_format_string(format)
@@ -465,12 +409,14 @@ class BreachIngestor:
                 else:
                     df = pl.DataFrame({"raw_line": batch_data})
 
-                log_info(f"Processando chunk {chunk_idx} ({df.height} linhas)...")
+                total_rows += df.height
+                
+                if chunk_idx % 10 == 0:
+                     elapsed = time.time() - start_time
+                     log_info(f"Processando chunk {chunk_idx} ({total_rows} linhas)... {elapsed:.2f}s")
 
                 # --- Dynamic Split Logic ---
                 num_cols = len(columns)
-                
-                # Split
                 df = df.with_columns(
                     pl.col("raw_line").str.splitn(delimiter, num_cols).alias("split_parts")
                 )
@@ -484,7 +430,7 @@ class BreachIngestor:
                     )
                 df = df.with_columns(exprs)
 
-                # Validation (if email exists)
+                # Validation
                 if "email" in columns:
                      df = df.filter(pl.col("email").is_not_null() & (pl.col("email") != ""))
                      if not no_check:
@@ -543,7 +489,8 @@ class BreachIngestor:
             if error_container:
                 raise error_container[0]
 
-            log_success(f"Ingestão Paralela via Streaming concluída para {input_path}. Total chunks: {chunk_idx}")
+            total_time = time.time() - start_time
+            log_success(f"Ingestão Paralela via Streaming concluída para {input_path}. Total chunks: {chunk_idx} | Linhas: {total_rows} | Tempo: {total_time:.2f}s")
             
         except KeyboardInterrupt:
             log_warning("Ingestão interrompida pelo usuário.")
@@ -556,6 +503,98 @@ class BreachIngestor:
         finally:
             for t in workers:
                 t.join(timeout=2.0)
+
+    def _ingestion_worker(self, q: queue.Queue, error_event: threading.Event, error_container: list) -> None:
+        """Background worker to consume Arrow tables and insert into ClickHouse."""
+        try:
+            while True:
+                try:
+                    item = q.get(timeout=1.0)
+                except queue.Empty:
+                    if error_event.is_set():
+                        break
+                    continue
+
+                if item is None: # Sentinel
+                    q.task_done()
+                    break
+                
+                table, table_name = item
+                try:
+                    self.repository.insert_arrow_batch(table, table_name)
+                except Exception as e:
+                    log_error(f"Worker Upload Failed: {e}")
+                    error_container.append(e)
+                    error_event.set()
+                    
+                    try:
+                        while True:
+                            q.get_nowait()
+                            q.task_done()
+                    except queue.Empty:
+                        pass
+                    break 
+                finally:
+                    if not error_event.is_set():
+                        q.task_done()
+                    
+        except Exception as e:
+            if not error_container:
+                error_container.append(e)
+            error_event.set()
+
+    def _push_to_worker(self, q, item, stop_event, error_container):
+        while not stop_event.is_set():
+            try:
+                q.put(item, timeout=0.5)
+                return
+            except queue.Full:
+                continue
+        
+        if error_container:
+            raise error_container[0]
+        raise RuntimeError("Worker stopped unexpectedly")
+    
+    def _ingest_parquet_to_clickhouse(self, parquet_path: Path, batch_size: int) -> None:
+        """
+        Reads a Parquet file and ingests chunks using the shared worker pattern.
+        """
+        # --- THREADING SETUP ---
+        upload_queue = queue.Queue(maxsize=3)
+        stop_event = threading.Event()
+        error_container = []
+
+        # Start Shared Worker
+        worker_thread = threading.Thread(
+            target=self._ingestion_worker, 
+            args=(upload_queue, stop_event, error_container), 
+            daemon=True
+        )
+        worker_thread.start()
+        
+        try:
+            for batch in self.file_storage.read_parquet_batches(parquet_path, batch_size):
+                if stop_event.is_set():
+                    break
+                
+                try:
+                    table = pa.Table.from_batches([batch])
+                    self._push_to_worker(upload_queue, (table, "breach_records"), stop_event, error_container)
+                except Exception as e:
+                    log_error(f"Failed to process parquet batch: {e}")
+                    raise e
+            
+            # End
+            if not stop_event.is_set():
+                self._push_to_worker(upload_queue, None, stop_event, error_container)
+                upload_queue.join()
+            
+            if error_container:
+                raise error_container[0]
+                
+        except Exception as e:
+            stop_event.set()
+            raise e
 
     def _move_to_quarantine(self, file_path: Path, quarantine_dir: Path) -> None:
         try:

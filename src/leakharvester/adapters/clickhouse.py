@@ -49,6 +49,50 @@ class ClickHouseAdapter(BreachRepository):
         """Adds a new column to the table."""
         self.client.command(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {column_name} {column_type}")
 
+    def get_table_stats(self, table_name: str) -> dict:
+        """Fetches storage and row statistics for the table."""
+        db, table = table_name.split('.') if '.' in table_name else (self.database, table_name)
+        sql = f"""
+        SELECT 
+            sum(rows) as total_rows,
+            formatReadableSize(sum(data_compressed_bytes)) as compressed_size,
+            formatReadableSize(sum(data_uncompressed_bytes)) as uncompressed_size,
+            round(sum(data_uncompressed_bytes) / nullIf(sum(data_compressed_bytes),0), 2) as compression_ratio
+        FROM system.parts
+        WHERE database = '{db}' AND table = '{table}' AND active = 1
+        """
+        result = self.client.query(sql).result_rows
+        if not result or result[0][0] is None:
+             return {"total_rows": 0, "compressed_size": "0 B", "uncompressed_size": "0 B", "compression_ratio": 0.0}
+        
+        return {
+            "total_rows": result[0][0],
+            "compressed_size": result[0][1],
+            "uncompressed_size": result[0][2],
+            "compression_ratio": result[0][3]
+        }
+
+    def get_source_file_stats(self, table_name: str, limit: int = 50) -> list:
+        """Returns aggregated stats per source file."""
+        sql = f"""
+        SELECT 
+            source_file, 
+            count() as row_count, 
+            min(import_date) as first_seen, 
+            max(import_date) as last_seen
+        FROM {table_name}
+        GROUP BY source_file 
+        ORDER BY row_count DESC 
+        LIMIT {limit}
+        """
+        return self.client.query(sql).result_rows
+
+    def get_indices(self, table_name: str) -> list:
+        """Returns list of skipping indices."""
+        db, table = table_name.split('.') if '.' in table_name else (self.database, table_name)
+        sql = f"SELECT name, type, expr, granularity FROM system.data_skipping_indices WHERE database = '{db}' AND table = '{table}'"
+        return self.client.query(sql).result_rows
+
     def close(self) -> None:
         # Best effort close for current thread
         if hasattr(self._thread_local, 'client'):

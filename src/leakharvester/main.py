@@ -206,13 +206,16 @@ def switch_mode(mode: str = typer.Argument(..., help="Index mode: 'eco' (Space-S
 
 @app.command()
 def search(
-    query: str = typer.Argument(..., help="Search term (e.g. 'augusto.bachini', 'password123')"),
+    query: str = typer.Argument(None, help="Search term (e.g. 'augusto.bachini', 'password123')"),
     limit: int = typer.Option(20, help="Max results to display"),
-    columns: str = typer.Option(None, help="Comma-separated list of columns to search (default: all)")
+    column: str = typer.Option(None, help="Comma-separated list of columns to search (default: all)"),
+    columns: bool = typer.Option(False, help="List available columns")
 ):
     """Searches the breach database using ILIKE across all string columns."""
     from rich.table import Table
     from rich.console import Console
+    from rich.panel import Panel
+    from rich import box
     import time
     
     console = Console()
@@ -225,9 +228,26 @@ def search(
         log_error(f"Failed to fetch table schema: {e}")
         return
 
-    # Determine columns to search
+    # Handle introspection request
     if columns:
-        search_cols = [c.strip() for c in columns.split(",")]
+        schema_text = ", ".join([f"[green]{c}[/green]" for c in all_cols])
+        schema_panel = Panel(
+            schema_text, 
+            title="[bold green]Available Columns[/bold green]", 
+            border_style="green",
+            box=box.ROUNDED
+        )
+        console.print(schema_panel)
+        return
+
+    # If we are not listing columns, query is required
+    if not query:
+        console.print("[red]Error: Missing argument 'QUERY'.[/red]")
+        raise typer.Exit(code=1)
+
+    # Determine columns to search
+    if column:
+        search_cols = [c.strip() for c in column.split(",")]
         # Validate existence
         invalid = [c for c in search_cols if c not in all_cols]
         if invalid:
@@ -239,6 +259,7 @@ def search(
         # Ideally we check types, but for now we assume most user cols are strings.
         # We skip internal ClickHouse metadata if any.
         search_cols = [c for c in all_cols if c not in ('breach_date', 'import_date')]
+        log_info(f"Searching in default columns: {', '.join(search_cols)}")
 
     # Build WHERE clause
     conditions = [f"{col} ILIKE '%{query}%'" for col in search_cols]
@@ -416,6 +437,96 @@ def ingest(
                     custom_source_name=source_name,
                     num_workers=workers
                 )
+
+@app.command()
+def info(
+    limit: int = typer.Option(50, help="Max source files to list")
+):
+    """Displays comprehensive statistics about the breach database."""
+    from rich.console import Console
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.layout import Layout
+    from rich import box
+
+    repo = ClickHouseAdapter()
+    console = Console()
+    
+    # Fetch Data
+    try:
+        stats = repo.get_table_stats("vault.breach_records")
+        cols = repo.get_columns("vault.breach_records")
+        indices = repo.get_indices("vault.breach_records")
+        sources = repo.get_source_file_stats("vault.breach_records", limit)
+    except Exception as e:
+        log_error(f"Failed to fetch info: {e}")
+        return
+
+    # 1. Overview Panel
+    overview_table = Table.grid(padding=1)
+    overview_table.add_column(style="bold cyan", justify="right")
+    overview_table.add_column(style="white")
+    
+    overview_table.add_row("Total Records:", f"{stats['total_rows']:,}")
+    overview_table.add_row("Compressed Size:", str(stats['compressed_size']))
+    overview_table.add_row("Uncompressed:", str(stats['uncompressed_size']))
+    overview_table.add_row("Compression Ratio:", f"{stats['compression_ratio']}x")
+    overview_table.add_row("Total Columns:", str(len(cols)))
+    overview_table.add_row("Active Indices:", str(len(indices)))
+
+    overview_panel = Panel(
+        overview_table, 
+        title="[bold blue]Database Overview[/bold blue]", 
+        border_style="blue",
+        box=box.ROUNDED
+    )
+
+    # 2. Schema Panel
+    schema_text = ", ".join([f"[green]{c}[/green]" for c in cols])
+    schema_panel = Panel(
+        schema_text, 
+        title="[bold green]Current Schema[/bold green]", 
+        border_style="green",
+        box=box.ROUNDED
+    )
+    
+    # 3. Indices Panel
+    idx_table = Table(box=box.SIMPLE_HEAD, expand=True)
+    idx_table.add_column("Index Name", style="yellow")
+    idx_table.add_column("Type")
+    idx_table.add_column("Granularity")
+    
+    for idx in indices:
+        idx_table.add_row(idx[0], idx[1], str(idx[3]))
+        
+    idx_panel = Panel(
+        idx_table,
+        title="[bold yellow]Skipping Indices[/bold yellow]",
+        border_style="yellow",
+        box=box.ROUNDED
+    )
+
+    # 4. Source Files Table
+    src_table = Table(title=f"Top {limit} Source Files", box=box.MINIMAL_DOUBLE_HEAD)
+    src_table.add_column("Source File", style="bold magenta")
+    src_table.add_column("Rows", justify="right")
+    src_table.add_column("First Import", style="dim")
+    src_table.add_column("Last Import", style="dim")
+    
+    for src in sources:
+        src_table.add_row(
+            src[0], 
+            f"{src[1]:,}", 
+            str(src[2]), 
+            str(src[3])
+        )
+
+    # Rendering
+    console.print(overview_panel)
+    console.print(schema_panel)
+    if indices:
+        console.print(idx_panel)
+    console.print(src_table)
 
 if __name__ == "__main__":
     app()
