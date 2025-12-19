@@ -27,8 +27,7 @@ SETTINGS
     index_granularity = 8192,
     max_bytes_to_merge_at_min_space_in_pool = 10485760,
     min_bytes_for_wide_part = 10485760,
-    old_parts_lifetime = 60,
-    max_partitions_per_insert_block = 1000;
+    old_parts_lifetime = 60;
 """
 
 @app.command()
