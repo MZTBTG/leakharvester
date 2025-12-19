@@ -20,7 +20,6 @@ CANONICAL_SCHEMA = pl.Schema({
     "import_date": pl.Datetime("us"),
     "email": pl.String,
     "username": pl.String,
-    "password": pl.String,
     "password": pl.String
 })
 

@@ -1,12 +1,13 @@
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple, List
 import threading
 import queue
 import polars as pl
 import pyarrow as pa
+from rich.prompt import Confirm
 from leakharvester.ports.repository import BreachRepository
 from leakharvester.ports.file_storage import FileStorage
-from leakharvester.domain.rules import detect_column_mapping, normalize_text_expr, build_search_blob_expr
+from leakharvester.domain.rules import detect_column_mapping
 from leakharvester.domain.schemas import CANONICAL_SCHEMA
 from leakharvester.adapters.console import log_info, log_error, log_warning, log_success
 
@@ -14,6 +15,76 @@ class BreachIngestor:
     def __init__(self, repository: BreachRepository, file_storage: FileStorage):
         self.repository = repository
         self.file_storage = file_storage
+
+    def _parse_format_string(self, format_str: str) -> Tuple[str, List[str]]:
+        """
+        Parses the format string to determine delimiter and column names.
+        Example: 'email:pass:doc' -> (':', ['email', 'password', 'document'])
+        Example: 'email,pass,null' -> (',', ['email', 'password', 'null'])
+        """
+        if format_str == "auto" or format_str == "email:pass":
+             return ":", ["email", "password"]
+
+        delimiters = [":", ",", ";", "|"]
+        detected_delimiter = ":" # Default
+        
+        # Heuristic: Count delimiters in the format string itself
+        counts = {d: format_str.count(d) for d in delimiters}
+        # Pick the one with the most occurrences
+        best_delimiter = max(counts, key=counts.get)
+        
+        if counts[best_delimiter] > 0:
+            detected_delimiter = best_delimiter
+            
+        columns = [c.strip() for c in format_str.split(detected_delimiter)]
+        
+        # Normalize specific common abbreviations
+        normalized_cols = []
+        for c in columns:
+            if c == "pass": normalized_cols.append("password")
+            elif c == "user": normalized_cols.append("username")
+            else: normalized_cols.append(c)
+            
+        return detected_delimiter, normalized_cols
+
+    def _validate_and_sync_schema(self, columns: List[str]) -> bool:
+        """
+        Checks if columns exist in ClickHouse. Prompts user to create missing ones.
+        Returns False if user aborts.
+        """
+        # Get existing columns from DB
+        try:
+            # We assume table is vault.breach_records based on main.py
+            # Ideally this should be configurable or passed in
+            existing_cols = set(self.repository.get_columns("vault.breach_records"))
+        except Exception as e:
+            log_error(f"Failed to fetch schema from DB: {e}")
+            return False
+
+        # Filter out 'null' placeholder and existing cols
+        missing_cols = []
+        for col in columns:
+            if col == "null": continue
+            if col not in existing_cols:
+                missing_cols.append(col)
+        
+        if not missing_cols:
+            return True
+
+        log_warning(f"The following columns are missing in the database: {missing_cols}")
+        if Confirm.ask(f"Do you want to add these {len(missing_cols)} columns to the database schema?", default=True):
+            try:
+                for col in missing_cols:
+                    log_info(f"Adding column '{col}'...")
+                    self.repository.add_column("vault.breach_records", col)
+                log_success("Schema updated successfully.")
+                return True
+            except Exception as e:
+                log_error(f"Failed to update schema: {e}")
+                return False
+        else:
+            log_error("Ingestion aborted by user due to schema mismatch.")
+            return False
 
     def process_file(
         self, 
@@ -28,9 +99,13 @@ class BreachIngestor:
     ) -> None:
         log_info(f"Iniciando processamento de: {input_path} [Format: {format}, NoCheck: {no_check}, Workers: {num_workers}]")
         
+        # If format is explicit (not auto), skip detection and go straight to streaming
+        if format != "auto":
+             self._process_raw_streaming(input_path, staging_dir, batch_size, format=format, no_check=no_check, custom_source_name=custom_source_name, num_workers=num_workers)
+             return
+
         # Initial peek to detect columns/schema
         try:
-            # Read just the header/first few lines to detect schema
             preview_df = pl.read_csv(input_path, n_rows=100, ignore_errors=True)
             columns = preview_df.columns
         except Exception as e:
@@ -70,7 +145,6 @@ class BreachIngestor:
             workers.append(t)
 
         try:
-            # Use the iterator to stream batches
             reader = pl.read_csv_batched(
                 input_path, 
                 batch_size=batch_size, 
@@ -91,20 +165,17 @@ class BreachIngestor:
                 chunk_idx += 1
                 
                 # --- TRANSFORMATION LOGIC (Per Batch) ---
-                # 1. Rename
-                # Only rename columns that exist in this batch (safety)
                 valid_renames = {k: v for k, v in rename_map.items() if k in df.columns}
                 df = df.rename(valid_renames)
                 
-                # 2. Add Missing/Metadata Columns
-                target_cols = CANONICAL_SCHEMA.names()
-                
-                # Add source_file
+                # Add Metadata Columns
                 source_label = custom_source_name or input_path.name
                 df = df.with_columns(pl.lit(source_label).alias("source_file"))
 
-                # Ensure all target columns exist
+                # Ensure canonical cols exist (email, username, etc from Schema)
+                target_cols = CANONICAL_SCHEMA.names()
                 current_cols = df.columns
+                
                 cols_to_add = []
                 for col in target_cols:
                     if col not in current_cols:
@@ -118,15 +189,7 @@ class BreachIngestor:
                 if cols_to_add:
                     df = df.with_columns(cols_to_add)
 
-                # 3. Build Search Blob (Deprecated/Removed)
-                # search_cols = ["email", "username", "password", "hash"]
-                # valid_search_cols = [c for c in search_cols if c in df.columns]
-                
-                # df = df.with_columns(
-                #    build_search_blob_expr(valid_search_cols)
-                # )
-                
-                # 4. Final Select & Cast
+                # Final Select & Cast
                 exprs = [pl.col(name).cast(dtype) for name, dtype in CANONICAL_SCHEMA.items()]
                 df = df.select(exprs)
 
@@ -141,7 +204,6 @@ class BreachIngestor:
 
             # End of Stream
             if not stop_event.is_set():
-                # Signal all workers
                 for _ in range(num_workers):
                     self._push_to_worker(upload_queue, None, stop_event, error_container)
                 
@@ -171,7 +233,6 @@ class BreachIngestor:
         try:
             while True:
                 try:
-                    # Check periodically to allow exit if main thread sets error_event
                     item = q.get(timeout=1.0)
                 except queue.Empty:
                     if error_event.is_set():
@@ -190,36 +251,23 @@ class BreachIngestor:
                     error_container.append(e)
                     error_event.set()
                     
-                    # Drain queue to unblock producer
                     try:
                         while True:
                             q.get_nowait()
                             q.task_done()
                     except queue.Empty:
                         pass
-                    # We continue loop to hit error_event check or break, 
-                    # but actually we should stop consuming if error occurred to be safe.
                     break 
                 finally:
-                    # Safe call if we haven't already drained it (which calls task_done)
-                    # But if we drained, we called task_done on future items. 
-                    # For CURRENT item, we must call task_done.
-                    # The drain logic is tricky. 
-                    # Simpler logic: Call task_done for THIS item. Then if error, drain rest.
                     if not error_event.is_set():
                         q.task_done()
-                    # If error set, we might have drained. Just leave it.
                     
         except Exception as e:
-            # Catch-all for worker internal logic crash
             if not error_container:
                 error_container.append(e)
             error_event.set()
 
     def _push_to_worker(self, q, item, stop_event, error_container):
-        """
-        Safely pushes to queue. Prevents deadlock if worker dies.
-        """
         while not stop_event.is_set():
             try:
                 q.put(item, timeout=0.5)
@@ -227,32 +275,29 @@ class BreachIngestor:
             except queue.Full:
                 continue
         
-        # If we exit loop, worker is dead
         if error_container:
             raise error_container[0]
         raise RuntimeError("Worker stopped unexpectedly")
 
     def process_stream(self, stream: Any, staging_dir: Path, quarantine_dir: Path, batch_size: int, source_name: str = "stdin", format: str = "auto", no_check: bool = False, num_workers: int = 1) -> None:
         """
-        Ingests data from a stream (stdin/pipe) using a Producer-Consumer thread pattern.
-        Producer (Main Thread): Reads stream -> Parsing -> Validation -> Queue
-        Consumer (Worker Threads): Queue -> ClickHouse Upload
+        Ingests data from a stream (stdin/pipe) using the dynamic logic.
         """
         import warnings
-        
-        # Suppress Polars "CSV malformed" warnings typical for parallel parsing of ragged data
         warnings.filterwarnings("ignore", message="CSV malformed")
         
         chunk_idx = 0
-        email_pattern = r"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})"
         
-        # --- THREADING SETUP ---
-        # Queue Maxsize = 2 batches per worker (~6GB - 12GB RAM buffer depending on batch size)
+        # 1. Parse Format & Validate Schema
+        delimiter, columns = self._parse_format_string(format)
+        if not self._validate_and_sync_schema(columns):
+            return
+
+        # 2. Setup Workers
         upload_queue = queue.Queue(maxsize=num_workers * 2)
         stop_event = threading.Event()
         error_container = []
 
-        # Start Shared Workers
         workers = []
         for _ in range(num_workers):
             t = threading.Thread(
@@ -263,90 +308,100 @@ class BreachIngestor:
             t.start()
             workers.append(t)
         
-        log_info(f"Iniciando ingestão Paralela (Producer-Consumers) via Stream ({source_name}) [Format: {format}] [Workers: {num_workers}]...")
+        log_info(f"Iniciando ingestão via Stream ({source_name}) [Format: {format}] [Delim: '{delimiter}'] [Cols: {columns}]")
         
         try:
             for df in self.file_storage.read_stream_batched(stream, batch_size=batch_size):
                 if stop_event.is_set():
-                    break # Error happened
+                    break 
 
                 chunk_idx += 1
                 if chunk_idx % 10 == 0:
                      log_info(f"Processando chunk {chunk_idx} ({df.height} linhas)...")
                 
-                # Split raw_line into max 2 parts
+                # --- Dynamic Split Logic ---
+                # Split raw_line by delimiter. 'n' is num columns - 1
+                # If there are extra columns, they might stay in the last part or get truncated?
+                # Polars splitn uses strict count. 
+                
+                num_cols = len(columns)
                 df = df.with_columns(
-                    pl.col("raw_line").str.splitn(":", 2).alias("split_parts")
+                    pl.col("raw_line").str.splitn(delimiter, num_cols).alias("split_parts")
                 )
                 
-                df = df.with_columns([
-                    pl.col("split_parts").struct.field("field_0").alias("part_0"),
-                    pl.col("split_parts").struct.field("field_1").alias("part_1")
-                ])
-                
-                if format == "email:pass":
-                    # Fast Path with Validation
-                    df = df.with_columns(
-                        pl.col("part_0").alias("email"),
-                        pl.col("part_1").fill_null("").alias("password")
+                # Extract columns
+                exprs = []
+                for i, col_name in enumerate(columns):
+                    if col_name == "null":
+                        continue
+                    exprs.append(
+                        pl.col("split_parts").struct.field(f"field_{i}").alias(col_name)
                     )
-                    
-                    if not no_check:
-                        # Validation Regex (Simple/Fast)
+                
+                df = df.with_columns(exprs)
+                
+                # Filter rows where primary identity is null (e.g. email)
+                # If 'email' is in columns, we filter by it.
+                if "email" in columns:
+                     df = df.filter(pl.col("email").is_not_null() & (pl.col("email") != ""))
+                     
+                     if not no_check:
+                        # Validation Regex
                         validation_pattern = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
-                        good_df = df.filter(pl.col("email").str.contains(validation_pattern))
                         bad_df = df.filter(~pl.col("email").str.contains(validation_pattern))
                         
                         if bad_df.height > 0:
-                            q_path = quarantine_dir / f"quarantine_{source_name}_{chunk_idx}.parquet"
-                            try:
-                                bad_df.select(["raw_line"]).write_parquet(q_path, compression="zstd")
-                            except Exception: pass
+                             q_path = quarantine_dir / f"quarantine_{source_name}_{chunk_idx}.parquet"
+                             try:
+                                 bad_df.select(["raw_line"]).write_parquet(q_path, compression="zstd")
+                             except Exception: pass
                         
-                        df = good_df
-                    
-                else:
-                    # Robust Path
-                    df = df.with_columns(
-                         pl.when(pl.col("part_0").str.contains(email_pattern))
-                           .then(pl.col("part_0"))
-                           .otherwise(pl.col("raw_line").str.extract(email_pattern, 1))
-                           .alias("email"),
-                         
-                         pl.when(pl.col("part_0").str.contains(email_pattern))
-                           .then(pl.col("part_1"))
-                           .otherwise(pl.lit("")) 
-                           .alias("password")
-                    )
+                        df = df.filter(pl.col("email").str.contains(validation_pattern))
 
-                df = df.filter(pl.col("email").is_not_null())
-                
                 if df.height == 0:
                     continue
 
+                # Add Metadata
                 df = df.with_columns([
                     pl.lit(source_name).alias("source_file"),
-                    pl.lit("").alias("username"),
                     pl.lit(None).cast(pl.Date).alias("breach_date"),
                     pl.lit(None).cast(pl.Datetime).alias("import_date")
                 ])
                 
-                df = df.select(CANONICAL_SCHEMA.names())
+                # Fill missing canonical columns with empty string if not present
+                target_cols = CANONICAL_SCHEMA.names()
+                current_cols = set(df.columns)
+                missing_exprs = []
+                for tc in target_cols:
+                    if tc not in current_cols:
+                         if tc == "breach_date" or tc == "import_date": continue # Already added
+                         missing_exprs.append(pl.lit("").alias(tc))
                 
-                # Conversion to Arrow (Main Thread)
+                if missing_exprs:
+                    df = df.with_columns(missing_exprs)
+                
+                # Select ALL valid columns (Canonical + Dynamic Extras)
+                # We need to intersect with DB schema ideally, but we already validated schema.
+                # So we select everything that isn't temporary.
+                
+                # Identify columns to keep: Canonical + (Dynamic - 'null')
+                cols_to_keep = list(set(CANONICAL_SCHEMA.names()) | (set(columns) - {"null"}))
+                
+                # Polars select, allowing strict=False or just explicit list
+                # We trust our construction
+                final_df = df.select([c for c in cols_to_keep if c in df.columns])
+                
+                # Push
                 try:
-                    arrow_table = df.to_arrow()
-                    # Safe Push to shared worker queue
+                    arrow_table = final_df.to_arrow()
                     self._push_to_worker(upload_queue, (arrow_table, "breach_records"), stop_event, error_container)
                 except Exception as e:
                     log_error(f"Failed to convert chunk {chunk_idx}: {e}")
             
             # End of Stream
             if not stop_event.is_set():
-                # Signal all workers to stop
                 for _ in range(num_workers):
                     self._push_to_worker(upload_queue, None, stop_event, error_container)
-                
                 upload_queue.join()
                 for t in workers:
                     t.join()
@@ -354,37 +409,36 @@ class BreachIngestor:
             if error_container:
                 raise error_container[0]
 
-            log_success(f"Ingestão Paralela via Stream concluída. Total chunks: {chunk_idx}")
+            log_success(f"Ingestão via Stream concluída. Total chunks: {chunk_idx}")
             
         except KeyboardInterrupt:
             log_warning("Ingestão interrompida pelo usuário.")
-            log_warning(f"DADOS PARCIAIS: A ingestão de stream '{source_name}' foi interrompida. Dados parciais podem persistir.")
             stop_event.set()
             raise
         except Exception as e:
             log_error(f"Erro durante ingestão de stream: {e}")
             stop_event.set()
         finally:
-            # Ensure workers terminate
             for t in workers:
                 t.join(timeout=2.0)
 
 
     def _process_raw_streaming(self, input_path: Path, staging_dir: Path, batch_size: int, format: str = "auto", no_check: bool = False, custom_source_name: Optional[str] = None, num_workers: int = 1) -> None:
         """
-        Ingests a raw file in chunks using Parallel Producer-Consumer pattern.
-        Main Thread: Reads lines -> Extract Regex -> Convert to Arrow
-        Worker Thread: Uploads Arrow Batch to ClickHouse
+        Ingests a raw file in chunks using Parallel Producer-Consumer pattern with Dynamic Format support.
         """
         chunk_idx = 0
-        email_pattern = r"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})"
         
-        # --- THREADING SETUP ---
+        # 1. Parse Format & Validate
+        delimiter, columns = self._parse_format_string(format)
+        if not self._validate_and_sync_schema(columns):
+            return
+
+        # 2. Workers
         upload_queue = queue.Queue(maxsize=num_workers * 2)
         stop_event = threading.Event()
         error_container = []
 
-        # Start Shared Workers
         workers = []
         for _ in range(num_workers):
             t = threading.Thread(
@@ -395,15 +449,15 @@ class BreachIngestor:
             t.start()
             workers.append(t)
         
+        log_info(f"Iniciando Ingestão Streaming de {input_path.name} [Delim: '{delimiter}'] [Cols: {len(columns)}]")
+
         try:
-            # batch_size passed here is from config (e.g. 5,000,000)
             for batch_data in self.file_storage.read_lines_batched(input_path, batch_size=batch_size):
                 if stop_event.is_set():
                     break
 
                 chunk_idx += 1
                 
-                # Check if batch_data is already a DataFrame (optimized path) or list (fallback)
                 if isinstance(batch_data, pl.DataFrame):
                     df = batch_data
                     if "raw_line" not in df.columns:
@@ -413,73 +467,75 @@ class BreachIngestor:
 
                 log_info(f"Processando chunk {chunk_idx} ({df.height} linhas)...")
 
-                if format == "email:pass":
-                    # --- FAST PATH ---
-                    # 1. Split by ':' 
-                    df = df.with_columns(
-                        pl.col("raw_line").str.splitn(":", 2).alias("split_parts")
+                # --- Dynamic Split Logic ---
+                num_cols = len(columns)
+                
+                # Split
+                df = df.with_columns(
+                    pl.col("raw_line").str.splitn(delimiter, num_cols).alias("split_parts")
+                )
+
+                # Map to Columns
+                exprs = []
+                for i, col_name in enumerate(columns):
+                    if col_name == "null": continue
+                    exprs.append(
+                        pl.col("split_parts").struct.field(f"field_{i}").alias(col_name)
                     )
-                    df = df.with_columns(
-                        pl.col("split_parts").struct.field("field_0").alias("email"),
-                        pl.col("split_parts").struct.field("field_1").fill_null("").alias("password")
-                    )
-                    
-                    if not no_check:
-                        # 2. Simple Validation (Optimistic)
-                        good_df = df.filter(
-                            pl.col("email").str.contains("@", literal=True) & 
-                            (pl.col("email").str.len_bytes() > 5)
-                        )
-                        
-                        # Quarantine Bad Rows
-                        bad_df = df.filter(~(pl.col("email").str.contains("@", literal=True) & (pl.col("email").str.len_bytes() > 5)))
-                        
+                df = df.with_columns(exprs)
+
+                # Validation (if email exists)
+                if "email" in columns:
+                     df = df.filter(pl.col("email").is_not_null() & (pl.col("email") != ""))
+                     if not no_check:
+                        validation_pattern = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
+                        bad_df = df.filter(~pl.col("email").str.contains(validation_pattern))
                         if bad_df.height > 0:
                              q_path = staging_dir.parent / "quarantine" / f"quarantine_{input_path.stem}_{chunk_idx}.parquet"
                              try:
                                  bad_df.select(["raw_line"]).write_parquet(q_path, compression="zstd")
                              except Exception: pass
+                        df = df.filter(pl.col("email").str.contains(validation_pattern))
 
-                        df = good_df
-                    # else: no_check is True, skip validation and quarantine
-
-                else:
-                    # --- ROBUST PATH (Regex) ---
-                    df = df.with_columns(
-                        pl.col("raw_line").str.extract(email_pattern, 1).alias("email")
-                    ).filter(pl.col("email").is_not_null())
-                
                 if df.height == 0:
                     continue
 
+                # Metadata
                 source_label = custom_source_name or input_path.name
                 df = df.with_columns([
                     pl.lit(source_label).alias("source_file"),
-                    pl.lit("").alias("username"),
-                    pl.lit("").alias("password"),
                     pl.lit(None).cast(pl.Date).alias("breach_date"),
                     pl.lit(None).cast(pl.Datetime).alias("import_date")
                 ])
                 
-                # Select canonical columns
-                df = df.select(CANONICAL_SCHEMA.names())
+                # Missing Canonical Columns
+                target_cols = CANONICAL_SCHEMA.names()
+                current_cols = set(df.columns)
+                missing_exprs = []
+                for tc in target_cols:
+                    if tc not in current_cols:
+                         if tc == "breach_date" or tc == "import_date": continue
+                         missing_exprs.append(pl.lit("").alias(tc))
+                if missing_exprs:
+                    df = df.with_columns(missing_exprs)
                 
-                # --- PARALLEL INGESTION POINT ---
+                # Select Final Columns
+                cols_to_keep = list(set(CANONICAL_SCHEMA.names()) | (set(columns) - {"null"}))
+                final_df = df.select([c for c in cols_to_keep if c in df.columns])
+                
+                # Push
                 try:
-                    arrow_table = df.to_arrow()
-                    # Push to Worker
+                    arrow_table = final_df.to_arrow()
                     self._push_to_worker(upload_queue, (arrow_table, "breach_records"), stop_event, error_container)
                 except Exception as e:
                     log_error(f"Failed to ingest chunk {chunk_idx}: {e}")
                     q_path = staging_dir.parent / "quarantine" / f"failed_ingest_{input_path.stem}_{chunk_idx}.parquet"
                     df.write_parquet(q_path)
             
-            # End of Stream
+            # End
             if not stop_event.is_set():
-                # Signal all workers
                 for _ in range(num_workers):
                     self._push_to_worker(upload_queue, None, stop_event, error_container)
-                
                 upload_queue.join()
                 for t in workers:
                     t.join()
@@ -491,7 +547,6 @@ class BreachIngestor:
             
         except KeyboardInterrupt:
             log_warning("Ingestão interrompida pelo usuário.")
-            log_warning(f"DADOS PARCIAIS: Os dados de '{input_path.name}' podem estar duplicados se você reexecutar. Considere limpar com 'leakharvester wipe {input_path.name}' antes.")
             stop_event.set()
             raise
         except Exception as e:
@@ -499,51 +554,9 @@ class BreachIngestor:
             self._move_to_quarantine(input_path, staging_dir.parent / "quarantine")
             stop_event.set()
         finally:
-            # Ensure workers are cleaned up
             for t in workers:
                 t.join(timeout=2.0)
 
-    def _ingest_parquet_to_clickhouse(self, parquet_path: Path, batch_size: int) -> None:
-        """
-        Reads a Parquet file and ingests chunks using the shared worker pattern.
-        """
-        # --- THREADING SETUP ---
-        upload_queue = queue.Queue(maxsize=3)
-        stop_event = threading.Event()
-        error_container = []
-
-        # Start Shared Worker
-        worker_thread = threading.Thread(
-            target=self._ingestion_worker, 
-            args=(upload_queue, stop_event, error_container), 
-            daemon=True
-        )
-        worker_thread.start()
-        
-        try:
-            for batch in self.file_storage.read_parquet_batches(parquet_path, batch_size):
-                if stop_event.is_set():
-                    break
-                
-                try:
-                    table = pa.Table.from_batches([batch])
-                    self._push_to_worker(upload_queue, (table, "breach_records"), stop_event, error_container)
-                except Exception as e:
-                    log_error(f"Failed to process parquet batch: {e}")
-                    raise e
-            
-            # End
-            if not stop_event.is_set():
-                self._push_to_worker(upload_queue, None, stop_event, error_container)
-                upload_queue.join()
-            
-            if error_container:
-                raise error_container[0]
-                
-        except Exception as e:
-            stop_event.set()
-            raise e
-            
     def _move_to_quarantine(self, file_path: Path, quarantine_dir: Path) -> None:
         try:
             dest = quarantine_dir / file_path.name
@@ -585,8 +598,6 @@ class BreachIngestor:
                     # Enriched with missing cols
                     valid_df = valid_df.with_columns([
                         pl.lit(q_file.name).alias("source_file"),
-                        # We don't know password/user, so leave empty or extract more?
-                        # For repair, simple email capture is good enough.
                         pl.lit("").alias("username"),
                         pl.lit("").alias("password"),
                         pl.lit(None).cast(pl.Date).alias("breach_date"),
@@ -602,7 +613,6 @@ class BreachIngestor:
                     total_recovered += valid_df.height
                     log_info(f"Recuperado {valid_df.height} linhas de {q_file.name}")
                 
-                # Delete processed quarantine file
                 q_file.unlink()
                 
             except Exception as e:

@@ -39,6 +39,16 @@ class ClickHouseAdapter(BreachRepository):
     def execute_ddl(self, ddl_statement: str) -> None:
         self.client.command(ddl_statement)
 
+    def get_columns(self, table_name: str) -> list[str]:
+        """Returns a list of column names for the specified table."""
+        db, table = table_name.split('.') if '.' in table_name else (self.database, table_name)
+        result = self.client.query(f"SELECT name FROM system.columns WHERE database = '{db}' AND table = '{table}'")
+        return [row[0] for row in result.result_rows]
+
+    def add_column(self, table_name: str, column_name: str, column_type: str = "String CODEC(ZSTD(3))") -> None:
+        """Adds a new column to the table."""
+        self.client.command(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {column_name} {column_type}")
+
     def close(self) -> None:
         # Best effort close for current thread
         if hasattr(self._thread_local, 'client'):

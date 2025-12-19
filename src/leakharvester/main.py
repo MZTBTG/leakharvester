@@ -13,12 +13,12 @@ CREATE DATABASE IF NOT EXISTS vault;
 
 CREATE TABLE IF NOT EXISTS vault.breach_records
 (
-    `source_file` LowCardinality(String) CODEC(ZSTD(9)),
-    `breach_date` Date CODEC(Delta(2), ZSTD(9)),
-    `import_date` DateTime DEFAULT now() CODEC(Delta(4), ZSTD(9)),
-    `email` String CODEC(ZSTD(9)),
-    `username` String CODEC(ZSTD(9)),
-    `password` String CODEC(ZSTD(9))
+    `source_file` LowCardinality(String) CODEC(ZSTD(3)),
+    `breach_date` Date CODEC(Delta(2), ZSTD(3)),
+    `import_date` DateTime DEFAULT now() CODEC(Delta(4), ZSTD(3)),
+    `email` String CODEC(ZSTD(3)),
+    `username` String CODEC(ZSTD(3)),
+    `password` String CODEC(ZSTD(3))
 )
 ENGINE = MergeTree
 ORDER BY (email, source_file)
@@ -69,9 +69,9 @@ def optimize_db():
         log_info("Applying Turbo Mode: 20 Threads, 30GB RAM Limit...")
         
         # 1. Add Indexes
-        log_info("Defining Email Index (bloom_filter)...")
+        log_info("Defining Email Index (ngrambf_v1 - Trigram)...")
         repo.client.command(
-            "ALTER TABLE vault.breach_records ADD INDEX IF NOT EXISTS idx_email email TYPE bloom_filter(0.01) GRANULARITY 1",
+            "ALTER TABLE vault.breach_records ADD INDEX IF NOT EXISTS idx_email email TYPE ngrambf_v1(3, 32768, 2, 0) GRANULARITY 1",
             settings=turbo_settings
         )
         
@@ -142,13 +142,13 @@ def switch_mode(mode: str = typer.Argument(..., help="Index mode: 'eco' (Space-S
     
     # Configuration
     if mode == "eco":
-        # 32KB Bloom Filter (~0.1% storage overhead, slower scans)
+        # 32KB Bloom Filter (~0.1% storage overhead)
         bf_size = 32768
-        desc = "Eco Mode (32KB Bloom Filter)"
+        desc = "Eco Mode (32KB Trigram Index)"
     else:
-        # 256KB Bloom Filter (~1% storage overhead, much lower false positives)
+        # 256KB Bloom Filter (~1% storage overhead, fewer false positives)
         bf_size = 262144
-        desc = "Turbo Mode (256KB Bloom Filter)"
+        desc = "Turbo Mode (256KB Trigram Index)"
         
     log_info(f"Switching to {desc}...")
     
@@ -160,9 +160,9 @@ def switch_mode(mode: str = typer.Argument(..., help="Index mode: 'eco' (Space-S
         # 2. Add New Indexes
         log_info("Defining new indexes...")
         
-        # Email index usually stays same, but let's rebuild to be clean
+        # Use ngrambf_v1 for ILIKE support
         repo.client.command(
-            "ALTER TABLE vault.breach_records ADD INDEX idx_email email TYPE bloom_filter(0.01) GRANULARITY 1",
+            f"ALTER TABLE vault.breach_records ADD INDEX idx_email email TYPE ngrambf_v1(3, {bf_size}, 2, 0) GRANULARITY 1",
             settings=turbo_settings
         )
         
@@ -207,30 +207,54 @@ def switch_mode(mode: str = typer.Argument(..., help="Index mode: 'eco' (Space-S
 @app.command()
 def search(
     query: str = typer.Argument(..., help="Search term (e.g. 'augusto.bachini', 'password123')"),
-    limit: int = typer.Option(20, help="Max results to display")
+    limit: int = typer.Option(20, help="Max results to display"),
+    columns: str = typer.Option(None, help="Comma-separated list of columns to search (default: all)")
 ):
-    """Searches the breach database using optimized token matching."""
+    """Searches the breach database using ILIKE across all string columns."""
     from rich.table import Table
     from rich.console import Console
     import time
-    import re
     
     console = Console()
     repo = ClickHouseAdapter()
     
+    # Fetch existing columns dynamically
+    try:
+        all_cols = repo.get_columns("vault.breach_records")
+    except Exception as e:
+        log_error(f"Failed to fetch table schema: {e}")
+        return
+
+    # Determine columns to search
+    if columns:
+        search_cols = [c.strip() for c in columns.split(",")]
+        # Validate existence
+        invalid = [c for c in search_cols if c not in all_cols]
+        if invalid:
+            log_error(f"Columns not found: {invalid}")
+            return
+    else:
+        # Default: Search all String-like columns (heuristic: skip dates/metadata if needed)
+        # We search everything except dates usually, but let's just search everything that is likely text.
+        # Ideally we check types, but for now we assume most user cols are strings.
+        # We skip internal ClickHouse metadata if any.
+        search_cols = [c for c in all_cols if c not in ('breach_date', 'import_date')]
+
     # Build WHERE clause
-    # Simple multi-column ILIKE search
-    where_clause = f"email ILIKE '%{query}%' OR username ILIKE '%{query}%' OR password ILIKE '%{query}%'"
+    conditions = [f"{col} ILIKE '%{query}%'" for col in search_cols]
+    where_clause = " OR ".join(conditions)
+    
+    # Dynamic Select
+    select_cols = ", ".join(all_cols)
     
     sql = f"""
-        SELECT 
-            email, username, password, breach_date, source_file
+        SELECT {select_cols}
         FROM vault.breach_records
         WHERE {where_clause}
         LIMIT {limit}
     """
     
-    log_info(f"Executing Search: [bold]{query}[/bold]")
+    log_info(f"Executing Search: [bold]{query}[/bold] on {len(search_cols)} columns")
     start_time = time.time()
     
     try:
@@ -249,7 +273,9 @@ def search(
             table.add_column(col, style="cyan")
             
         for row in rows:
-            table.add_row(*[str(r) for r in row])
+            # Handle potential None values for display
+            safe_row = [str(r) if r is not None else "" for r in row]
+            table.add_row(*safe_row)
             
         console.print(table)
         
