@@ -134,13 +134,20 @@ def optimize_db():
         log_error(f"Optimization failed: {e}")
 
 @app.command()
-def switch_mode(mode: str = typer.Argument(..., help="Index mode: 'eco' (Space-Saver) or 'turbo' (Speed-Demon)")):
-    """Switches between index profiles (Eco vs Turbo). Rebuilds indexes."""
+def switch_mode(
+    mode: str = typer.Argument(..., help="Index mode: 'eco' (Space-Saver) or 'turbo' (Speed-Demon)"),
+    token_type: str = typer.Option("ngram", "--token-type", help="Index type: 'ngram' (Trigram) or 'token' (TokenBF)")
+):
+    """Switches between index profiles (Eco vs Turbo) and Index Types (Ngram vs TokenBF). Rebuilds indexes."""
     import time
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
     
     if mode not in ["eco", "turbo"]:
         log_error("Invalid mode. Choose 'eco' or 'turbo'.")
+        raise typer.Exit(code=1)
+
+    if token_type not in ["ngram", "token"]:
+        log_error("Invalid token type. Choose 'ngram' or 'token'.")
         raise typer.Exit(code=1)
     
     repo = ClickHouseAdapter()
@@ -155,13 +162,23 @@ def switch_mode(mode: str = typer.Argument(..., help="Index mode: 'eco' (Space-S
     if mode == "eco":
         # 32KB Bloom Filter (~0.1% storage overhead)
         bf_size = 32768
-        desc = "Eco Mode (32KB Trigram Index)"
+        desc_mode = "Eco Mode"
     else:
         # 256KB Bloom Filter (~1% storage overhead, fewer false positives)
         bf_size = 262144
-        desc = "Turbo Mode (256KB Trigram Index)"
+        desc_mode = "Turbo Mode"
+
+    if token_type == "token":
+        # TokenBF is better for full words but requires tokenization (e.g. non-alphanumeric split)
+        # We index lower(email) to support case-insensitive search
+        index_def = f"lower(email) TYPE tokenbf_v1({bf_size}, 3, 0)"
+        desc_type = "TokenBF Index (Split by non-alphanumeric)"
+    else:
+        # NgramBF is better for partial substrings
+        index_def = f"email TYPE ngrambf_v1(3, {bf_size}, 2, 0)"
+        desc_type = "Trigram Index (Substring Search)"
         
-    log_info(f"Switching to {desc}...")
+    log_info(f"Switching to {desc_mode} with {desc_type}...")
     
     try:
         # 1. Drop Existing Indexes
@@ -171,9 +188,8 @@ def switch_mode(mode: str = typer.Argument(..., help="Index mode: 'eco' (Space-S
         # 2. Add New Indexes
         log_info("Defining new indexes...")
         
-        # Use ngrambf_v1 for ILIKE support
         repo.client.command(
-            f"ALTER TABLE vault.breach_records ADD INDEX idx_email email TYPE ngrambf_v1(3, {bf_size}, 2, 0) GRANULARITY 1",
+            f"ALTER TABLE vault.breach_records ADD INDEX idx_email {index_def} GRANULARITY 1",
             settings=turbo_settings
         )
         
@@ -190,7 +206,7 @@ def switch_mode(mode: str = typer.Argument(..., help="Index mode: 'eco' (Space-S
             TaskProgressColumn(),
             transient=True
         ) as progress:
-            task = progress.add_task(f"[cyan]Building {mode.title()} Indexes...", total=100)
+            task = progress.add_task(f"[cyan]Building {mode.title()} Indexes ({token_type})...", total=100)
             
             while True:
                 result = repo.client.query(
@@ -210,7 +226,7 @@ def switch_mode(mode: str = typer.Argument(..., help="Index mode: 'eco' (Space-S
                     break
                 time.sleep(1)
                 
-        log_success(f"Successfully switched to {desc}!")
+        log_success(f"Successfully switched to {desc_mode} ({token_type})!")
         
     except Exception as e:
         log_error(f"Mode switch failed: {e}")
