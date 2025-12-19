@@ -349,8 +349,11 @@ def wipe(
         log_success("Delete mutation submitted.")
         
         log_info("Triggering OPTIMIZE TABLE FINAL to force physical disk cleanup (This may take time)...")
+        log_info("You can safely press 'Ctrl+C' to detach (the server will continue working), or wait for it to finish.")
+        
         # Force merge to remove 'inactive' parts left by delete
-        repo.client.command("OPTIMIZE TABLE vault.breach_records FINAL")
+        # Increase timeout to 1 hour (3600s) for heavy operations
+        repo.client.command("OPTIMIZE TABLE vault.breach_records FINAL", settings={'receive_timeout': 3600})
         log_success("Optimization complete. Disk space reclaimed.")
         
     except Exception as e:
