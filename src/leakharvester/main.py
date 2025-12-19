@@ -136,9 +136,10 @@ def optimize_db():
 @app.command()
 def switch_mode(
     mode: str = typer.Argument(..., help="Index mode: 'eco' (Space-Saver) or 'turbo' (Speed-Demon)"),
-    token_type: str = typer.Option("ngram", "--token-type", help="Index type: 'ngram' (Trigram) or 'token' (TokenBF)")
+    token_type: str = typer.Option("ngram", "--token-type", help="Index type: 'ngram' (Trigram) or 'token' (TokenBF)"),
+    inverted_index: bool = typer.Option(False, "--inverted-index", help="Use experimental Inverted Index (Full Text) for sub-second search.")
 ):
-    """Switches between index profiles (Eco vs Turbo) and Index Types (Ngram vs TokenBF). Rebuilds indexes."""
+    """Switches between index profiles (Eco vs Turbo) and Index Types (Ngram vs TokenBF vs Inverted). Rebuilds indexes."""
     import time
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
     
@@ -168,7 +169,13 @@ def switch_mode(
         bf_size = 262144
         desc_mode = "Turbo Mode"
 
-    if token_type == "token":
+    if inverted_index:
+        # Inverted Index (Full Text)
+        index_def = "email TYPE inverted(0)"
+        desc_type = "Inverted Index (Full Text)"
+        # Enable experimental feature for this session
+        turbo_settings["allow_experimental_inverted_index"] = 1
+    elif token_type == "token":
         # TokenBF is better for full words but requires tokenization (e.g. non-alphanumeric split)
         # We index lower(email) to support case-insensitive search
         index_def = f"lower(email) TYPE tokenbf_v1({bf_size}, 3, 0)"
@@ -206,7 +213,7 @@ def switch_mode(
             TaskProgressColumn(),
             transient=True
         ) as progress:
-            task = progress.add_task(f"[cyan]Building {mode.title()} Indexes ({token_type})...", total=100)
+            task = progress.add_task(f"[cyan]Building {mode.title()} Indexes ({desc_type})...", total=100)
             
             while True:
                 result = repo.client.query(
@@ -217,7 +224,7 @@ def switch_mode(
                 if result and result[0][0] is not None:
                     parts_to_do = int(result[0][0])
                     if parts_to_do > 0:
-                        progress.update(task, completed=50, description=f"[cyan]Building {mode.title()} Indexes: {parts_to_do} parts remaining...")
+                        progress.update(task, completed=50, description=f"[cyan]Building Indexes: {parts_to_do} parts remaining...")
                     else:
                         progress.update(task, completed=100)
                         break
@@ -226,7 +233,7 @@ def switch_mode(
                     break
                 time.sleep(1)
                 
-        log_success(f"Successfully switched to {desc_mode} ({token_type})!")
+        log_success(f"Successfully switched to {desc_mode} ({desc_type})!")
         
     except Exception as e:
         log_error(f"Mode switch failed: {e}")
