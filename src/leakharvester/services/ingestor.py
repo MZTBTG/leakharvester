@@ -4,6 +4,7 @@ import threading
 import queue
 import polars as pl
 import pyarrow as pa
+import uuid
 from rich.prompt import Confirm
 from leakharvester.ports.repository import BreachRepository
 from leakharvester.ports.file_storage import FileStorage
@@ -85,6 +86,18 @@ class BreachIngestor:
             log_error("Ingestion aborted by user due to schema mismatch.")
             return False
 
+    def _finalize_partition_swap(self, target_table: str, staging_table: str, partition_id: str) -> None:
+        try:
+            log_info(f"Swapping partition '{partition_id}' from {staging_table} to {target_table}...")
+            self.repository.replace_partition(target_table, staging_table, partition_id)
+            log_success(f"Partition swap successful for {partition_id}.")
+        except Exception as e:
+            log_error(f"Partition swap failed: {e}")
+            raise e
+        finally:
+            log_info(f"Dropping staging table {staging_table}...")
+            self.repository.drop_table(staging_table)
+
     def process_file(
         self, 
         input_path: Path, 
@@ -94,140 +107,173 @@ class BreachIngestor:
         format: str = "auto",
         no_check: bool = False,
         custom_source_name: Optional[str] = None,
-        num_workers: int = 1
+        num_workers: int = 1,
+        append: bool = False
     ) -> None:
-        log_info(f"Iniciando processamento de: {input_path} [Format: {format}, NoCheck: {no_check}, Workers: {num_workers}]")
+        log_info(f"Iniciando processamento de: {input_path} [Format: {format}, NoCheck: {no_check}, Workers: {num_workers}, Append: {append}]")
         
-        # If format is explicit (not auto), skip detection and go straight to streaming
-        if format != "auto":
-             self._process_raw_streaming(input_path, staging_dir, batch_size, format=format, no_check=no_check, custom_source_name=custom_source_name, num_workers=num_workers)
-             return
+        target_table = "vault.breach_records"
+        source_label = custom_source_name or input_path.name
+        staging_table = None
 
-        # Initial peek to detect columns/schema
-        try:
-            preview_df = pl.read_csv(input_path, n_rows=100, ignore_errors=True)
-            columns = preview_df.columns
-        except Exception as e:
-            log_error(f"Erro ao ler cabeçalho de {input_path}: {e}")
-            return
-
-        rename_map = detect_column_mapping(columns)
-        
-        # If mapping fails or it looks raw, fallback to Raw Streaming
-        if not rename_map:
-             if "raw_line" in columns or len(columns) == 1:
-                 log_warning(f"Modo RAW detectado para {input_path}. Alternando para Ingestão em Streaming.")
-                 self._process_raw_streaming(input_path, staging_dir, batch_size, format=format, no_check=no_check, custom_source_name=custom_source_name, num_workers=num_workers)
-                 return
-             else:
-                 log_warning(f"Não foi possível mapear colunas críticas em {input_path}. Movendo para quarentena.")
-                 self._move_to_quarantine(input_path, quarantine_dir)
-                 return
-
-        # --- STREAMING STRUCTURED INGESTION ---
-        chunk_idx = 0
-        
-        # Threading Setup
-        upload_queue = queue.Queue(maxsize=num_workers * 2)
-        stop_event = threading.Event()
-        error_container = []
-
-        # Start Shared Workers
-        workers = []
-        for _ in range(num_workers):
-            t = threading.Thread(
-                target=self._ingestion_worker, 
-                args=(upload_queue, stop_event, error_container), 
-                daemon=True
-            )
-            t.start()
-            workers.append(t)
+        if append:
+            ingest_table = target_table
+        else:
+            staging_table = f"vault.staging_{uuid.uuid4().hex}"
+            log_info(f"Creating staging table: {staging_table}")
+            self.repository.create_staging_table(staging_table, target_table)
+            ingest_table = staging_table
 
         try:
-            reader = pl.read_csv_batched(
-                input_path, 
-                batch_size=batch_size, 
-                ignore_errors=True,
-                infer_schema_length=10000,
-                low_memory=True
-            )
+            # If format is explicit (not auto), skip detection and go straight to streaming
+            if format != "auto":
+                 self._process_raw_streaming(input_path, staging_dir, batch_size, format=format, no_check=no_check, custom_source_name=custom_source_name, num_workers=num_workers, ingest_table=ingest_table)
+                 if not append:
+                     self._finalize_partition_swap(target_table, staging_table, source_label)
+                 return
+    
+            # Initial peek to detect columns/schema
+            try:
+                preview_df = pl.read_csv(input_path, n_rows=100, ignore_errors=True)
+                columns = preview_df.columns
+            except Exception as e:
+                log_error(f"Erro ao ler cabeçalho de {input_path}: {e}")
+                if staging_table: self.repository.drop_table(staging_table)
+                return
+    
+            rename_map = detect_column_mapping(columns)
             
-            while True:
-                if stop_event.is_set():
-                    break
+            # If mapping fails or it looks raw, fallback to Raw Streaming
+            if not rename_map:
+                 if "raw_line" in columns or len(columns) == 1:
+                     log_warning(f"Modo RAW detectado para {input_path}. Alternando para Ingestão em Streaming.")
+                     self._process_raw_streaming(input_path, staging_dir, batch_size, format=format, no_check=no_check, custom_source_name=custom_source_name, num_workers=num_workers, ingest_table=ingest_table)
+                     if not append:
+                         self._finalize_partition_swap(target_table, staging_table, source_label)
+                     return
+                 else:
+                     log_warning(f"Não foi possível mapear colunas críticas em {input_path}. Movendo para quarentena.")
+                     self._move_to_quarantine(input_path, quarantine_dir)
+                     if staging_table: self.repository.drop_table(staging_table)
+                     return
+    
+            # --- STREAMING STRUCTURED INGESTION ---
+            chunk_idx = 0
+            
+            # Threading Setup
+            upload_queue = queue.Queue(maxsize=num_workers * 2)
+            stop_event = threading.Event()
+            error_container = []
+    
+            # Start Shared Workers
+            workers = []
+            for _ in range(num_workers):
+                t = threading.Thread(
+                    target=self._ingestion_worker, 
+                    args=(upload_queue, stop_event, error_container), 
+                    daemon=True
+                )
+                t.start()
+                workers.append(t)
+    
+            try:
+                reader = pl.read_csv_batched(
+                    input_path, 
+                    batch_size=batch_size, 
+                    ignore_errors=True,
+                    infer_schema_length=10000,
+                    low_memory=True
+                )
                 
-                batches = reader.next_batches(1)
-                if not batches:
-                    break
+                while True:
+                    if stop_event.is_set():
+                        break
+                    
+                    batches = reader.next_batches(1)
+                    if not batches:
+                        break
+                    
+                    df = batches[0]
+                    chunk_idx += 1
+                    
+                    # --- TRANSFORMATION LOGIC (Per Batch) ---
+                    valid_renames = {k: v for k, v in rename_map.items() if k in df.columns}
+                    df = df.rename(valid_renames)
+                    
+                    # Add Metadata Columns
+                    df = df.with_columns(pl.lit(source_label).alias("source_file"))
+    
+                    # Ensure canonical cols exist (email, username, etc from Schema)
+                    target_cols = CANONICAL_SCHEMA.names()
+                    current_cols = df.columns
+                    
+                    cols_to_add = []
+                    for col in target_cols:
+                        if col not in current_cols:
+                            if col == "breach_date":
+                                cols_to_add.append(pl.lit(None).cast(pl.Date).alias(col))
+                            elif col == "import_date":
+                                cols_to_add.append(pl.lit(None).cast(pl.Datetime).alias(col))
+                            else:
+                                cols_to_add.append(pl.lit("").alias(col))
+                    
+                    if cols_to_add:
+                        df = df.with_columns(cols_to_add)
+    
+                    # Final Select & Cast
+                    exprs = [pl.col(name).cast(dtype) for name, dtype in CANONICAL_SCHEMA.items()]
+                    df = df.select(exprs)
+    
+                    # --- PUSH TO WORKER ---
+                    try:
+                        arrow_table = df.to_arrow()
+                        self._push_to_worker(upload_queue, (arrow_table, ingest_table), stop_event, error_container)
+                    except Exception as e:
+                        log_error(f"Failed to process structured chunk {chunk_idx}: {e}")
+                        q_path = staging_dir.parent / "quarantine" / f"failed_struct_{input_path.stem}_{chunk_idx}.parquet"
+                        df.write_parquet(q_path)
+    
+                # End of Stream
+                if not stop_event.is_set():
+                    for _ in range(num_workers):
+                        self._push_to_worker(upload_queue, None, stop_event, error_container)
+                    
+                    upload_queue.join()
+                    for t in workers:
+                        t.join()
+    
+                if error_container:
+                    raise error_container[0]
+    
+                log_success(f"Ingestão Estruturada concluída para {input_path}. Total chunks: {chunk_idx}")
                 
-                df = batches[0]
-                chunk_idx += 1
-                
-                # --- TRANSFORMATION LOGIC (Per Batch) ---
-                valid_renames = {k: v for k, v in rename_map.items() if k in df.columns}
-                df = df.rename(valid_renames)
-                
-                # Add Metadata Columns
-                source_label = custom_source_name or input_path.name
-                df = df.with_columns(pl.lit(source_label).alias("source_file"))
-
-                # Ensure canonical cols exist (email, username, etc from Schema)
-                target_cols = CANONICAL_SCHEMA.names()
-                current_cols = df.columns
-                
-                cols_to_add = []
-                for col in target_cols:
-                    if col not in current_cols:
-                        if col == "breach_date":
-                            cols_to_add.append(pl.lit(None).cast(pl.Date).alias(col))
-                        elif col == "import_date":
-                            cols_to_add.append(pl.lit(None).cast(pl.Datetime).alias(col))
-                        else:
-                            cols_to_add.append(pl.lit("").alias(col))
-                
-                if cols_to_add:
-                    df = df.with_columns(cols_to_add)
-
-                # Final Select & Cast
-                exprs = [pl.col(name).cast(dtype) for name, dtype in CANONICAL_SCHEMA.items()]
-                df = df.select(exprs)
-
-                # --- PUSH TO WORKER ---
-                try:
-                    arrow_table = df.to_arrow()
-                    self._push_to_worker(upload_queue, (arrow_table, "breach_records"), stop_event, error_container)
-                except Exception as e:
-                    log_error(f"Failed to process structured chunk {chunk_idx}: {e}")
-                    q_path = staging_dir.parent / "quarantine" / f"failed_struct_{input_path.stem}_{chunk_idx}.parquet"
-                    df.write_parquet(q_path)
-
-            # End of Stream
-            if not stop_event.is_set():
-                for _ in range(num_workers):
-                    self._push_to_worker(upload_queue, None, stop_event, error_container)
-                
-                upload_queue.join()
-                for t in workers:
-                    t.join()
-
-            if error_container:
-                raise error_container[0]
-
-            log_success(f"Ingestão Estruturada concluída para {input_path}. Total chunks: {chunk_idx}")
-
-        except KeyboardInterrupt:
-            log_warning("Ingestão interrompida pelo usuário.")
-            stop_event.set()
-            raise
+                if not append:
+                    self._finalize_partition_swap(target_table, staging_table, source_label)
+    
+            except KeyboardInterrupt:
+                log_warning("Ingestão interrompida pelo usuário.")
+                stop_event.set()
+                if staging_table: self.repository.drop_table(staging_table)
+                raise
+            except Exception as e:
+                log_error(f"Erro durante processamento de {input_path}: {e}")
+                self._move_to_quarantine(input_path, quarantine_dir)
+                stop_event.set()
+                if staging_table: self.repository.drop_table(staging_table)
+            finally:
+                 for t in workers:
+                    t.join(timeout=2.0)
         except Exception as e:
-            log_error(f"Erro durante processamento de {input_path}: {e}")
-            self._move_to_quarantine(input_path, quarantine_dir)
-            stop_event.set()
-        finally:
-             for t in workers:
-                t.join(timeout=2.0)
+             # Just ensures we don't leave staging table if something weird happens outside the inner try/except
+             if staging_table and not append:
+                  try:
+                       # Check if it was already dropped (finalize_partition_swap drops it)
+                       # But drop_table is idempotent (IF EXISTS) so it's fine
+                       self.repository.drop_table(staging_table)
+                  except: pass
+             raise e
 
-    def process_stream(self, stream: Any, staging_dir: Path, quarantine_dir: Path, batch_size: int, source_name: str = "stdin", format: str = "auto", no_check: bool = False, num_workers: int = 1) -> None:
+    def process_stream(self, stream: Any, staging_dir: Path, quarantine_dir: Path, batch_size: int, source_name: str = "stdin", format: str = "auto", no_check: bool = False, num_workers: int = 1, append: bool = False) -> None:
         """
         Ingests data from a stream (stdin/pipe) using the dynamic logic.
         """
@@ -235,6 +281,17 @@ class BreachIngestor:
         import time
         warnings.filterwarnings("ignore", message="CSV malformed")
         
+        target_table = "vault.breach_records"
+        staging_table = None
+        
+        if append:
+            ingest_table = target_table
+        else:
+            staging_table = f"vault.staging_{uuid.uuid4().hex}"
+            log_info(f"Creating staging table: {staging_table}")
+            self.repository.create_staging_table(staging_table, target_table)
+            ingest_table = staging_table
+
         chunk_idx = 0
         total_rows = 0
         start_time = time.time()
@@ -242,6 +299,7 @@ class BreachIngestor:
         # 1. Parse Format & Validate Schema
         delimiter, columns = self._parse_format_string(format)
         if not self._validate_and_sync_schema(columns):
+            if staging_table: self.repository.drop_table(staging_table)
             return
 
         # 2. Setup Workers
@@ -259,7 +317,7 @@ class BreachIngestor:
             t.start()
             workers.append(t)
         
-        log_info(f"Iniciando ingestão via Stream ({source_name}) [Format: {format}] [Delim: '{delimiter}'] [Cols: {columns}]")
+        log_info(f"Iniciando ingestão via Stream ({source_name}) [Format: {format}] [Delim: '{delimiter}'] [Cols: {columns}] [Append: {append}]")
         
         try:
             for df in self.file_storage.read_stream_batched(stream, batch_size=batch_size):
@@ -335,7 +393,7 @@ class BreachIngestor:
                 # Push
                 try:
                     arrow_table = final_df.to_arrow()
-                    self._push_to_worker(upload_queue, (arrow_table, "breach_records"), stop_event, error_container)
+                    self._push_to_worker(upload_queue, (arrow_table, ingest_table), stop_event, error_container)
                 except Exception as e:
                     log_error(f"Failed to convert chunk {chunk_idx}: {e}")
             
@@ -353,18 +411,23 @@ class BreachIngestor:
             total_time = time.time() - start_time
             log_success(f"Ingestão via Stream concluída. Total chunks: {chunk_idx} | Linhas: {total_rows} | Tempo: {total_time:.2f}s")
             
+            if not append:
+                self._finalize_partition_swap(target_table, staging_table, source_name)
+
         except KeyboardInterrupt:
             log_warning("Ingestão interrompida pelo usuário.")
             stop_event.set()
+            if staging_table: self.repository.drop_table(staging_table)
             raise
         except Exception as e:
             log_error(f"Erro durante ingestão de stream: {e}")
             stop_event.set()
+            if staging_table: self.repository.drop_table(staging_table)
         finally:
             for t in workers:
                 t.join(timeout=2.0)
 
-    def _process_raw_streaming(self, input_path: Path, staging_dir: Path, batch_size: int, format: str = "auto", no_check: bool = False, custom_source_name: Optional[str] = None, num_workers: int = 1) -> None:
+    def _process_raw_streaming(self, input_path: Path, staging_dir: Path, batch_size: int, format: str = "auto", no_check: bool = False, custom_source_name: Optional[str] = None, num_workers: int = 1, ingest_table: str = "vault.breach_records") -> None:
         """
         Ingests a raw file in chunks using Parallel Producer-Consumer pattern with Dynamic Format support.
         """
@@ -472,7 +535,7 @@ class BreachIngestor:
                 # Push
                 try:
                     arrow_table = final_df.to_arrow()
-                    self._push_to_worker(upload_queue, (arrow_table, "breach_records"), stop_event, error_container)
+                    self._push_to_worker(upload_queue, (arrow_table, ingest_table), stop_event, error_container)
                 except Exception as e:
                     log_error(f"Failed to ingest chunk {chunk_idx}: {e}")
                     q_path = staging_dir.parent / "quarantine" / f"failed_ingest_{input_path.stem}_{chunk_idx}.parquet"
@@ -500,6 +563,7 @@ class BreachIngestor:
             log_error(f"Erro durante streaming raw de {input_path}: {e}")
             self._move_to_quarantine(input_path, staging_dir.parent / "quarantine")
             stop_event.set()
+            raise # Propagate up to process_file for cleanup
         finally:
             for t in workers:
                 t.join(timeout=2.0)
@@ -519,25 +583,28 @@ class BreachIngestor:
                     q.task_done()
                     break
                 
-                table, table_name = item
                 try:
+                    table, table_name = item
                     self.repository.insert_arrow_batch(table, table_name)
                 except Exception as e:
                     log_error(f"Worker Upload Failed: {e}")
-                    error_container.append(e)
+                    if not error_container:
+                        error_container.append(e)
                     error_event.set()
-                    
+                finally:
+                    # Always mark the specific task as done, success or failure
+                    q.task_done()
+                
+                # If we hit an error, we should stop processing and drain the queue
+                if error_event.is_set():
                     try:
                         while True:
                             q.get_nowait()
                             q.task_done()
                     except queue.Empty:
                         pass
-                    break 
-                finally:
-                    if not error_event.is_set():
-                        q.task_done()
-                    
+                    break
+
         except Exception as e:
             if not error_container:
                 error_container.append(e)
