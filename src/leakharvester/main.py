@@ -22,20 +22,32 @@ CREATE TABLE IF NOT EXISTS vault.breach_records
 )
 ENGINE = MergeTree
 ORDER BY (email, source_file)
-PARTITION BY toYYYYMM(breach_date)
+PARTITION BY source_file
 SETTINGS
     index_granularity = 8192,
     max_bytes_to_merge_at_min_space_in_pool = 10485760,
     min_bytes_for_wide_part = 10485760,
-    old_parts_lifetime = 60;
+    old_parts_lifetime = 60,
+    max_partitions_per_insert_block = 1000;
 """
 
 @app.command()
-def init_db():
+def init_db(
+    reset: bool = typer.Option(False, "--reset", help="DROP existing table and recreate schema (Data Loss!)")
+):
     """Initializes the ClickHouse database and tables (without heavy indexes)."""
     try:
         settings.create_dirs()
         repo = ClickHouseAdapter()
+        
+        if reset:
+            from rich.prompt import Confirm
+            if Confirm.ask("[bold red]WARNING:[/bold red] This will DROP the existing database/table. All data will be lost. Continue?"):
+                repo.execute_ddl("DROP TABLE IF EXISTS vault.breach_records")
+                log_info("Dropped existing table.")
+            else:
+                log_info("Reset cancelled.")
+                return
         
         # Execute DDL statements sequentially
         statements = DDL_SQL.split(";")
@@ -377,7 +389,8 @@ def ingest(
     no_check: bool = typer.Option(False, help="Disable email validation in Fast Path (Dangerous but Fastest)"),
     batch_size: int = typer.Option(None, help="Batch size (rows) per chunk. Defaults to config (50K)."),
     watch: bool = typer.Option(False, help="Watch raw directory for new files"),
-    workers: int = typer.Option(1, "--workers", "-w", help="Number of concurrent upload workers. Defaults to 1.")
+    workers: int = typer.Option(1, "--workers", "-w", help="Number of concurrent upload workers. Defaults to 1."),
+    append: bool = typer.Option(False, "--append", help="Append data to existing source file instead of overwriting")
 ):
     """Ingests data from raw directory, specific file, or stdin pipe."""
     import sys
@@ -404,7 +417,8 @@ def ingest(
             source_name=final_source_name, 
             format=format, 
             no_check=no_check,
-            num_workers=workers
+            num_workers=workers,
+            append=append
         )
         return
 
@@ -417,7 +431,8 @@ def ingest(
             format=format, 
             no_check=no_check, 
             custom_source_name=source_name,
-            num_workers=workers
+            num_workers=workers,
+            append=append
         )
     else:
         # Process all files in raw
@@ -438,7 +453,8 @@ def ingest(
                     format=format, 
                     no_check=no_check, 
                     custom_source_name=source_name,
-                    num_workers=workers
+                    num_workers=workers,
+                    append=append
                 )
 
 @app.command()
