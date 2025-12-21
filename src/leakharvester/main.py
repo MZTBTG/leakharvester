@@ -188,6 +188,17 @@ def switch_mode(
     log_info(f"Switching to {desc_mode} with {desc_type}...")
     
     try:
+        # 0. Kill Pending Mutations (Fix for "affected by mutation" error)
+        log_info("Checking for pending mutations...")
+        pending_mutations = repo.client.query(
+            "SELECT count() FROM system.mutations WHERE table = 'breach_records' AND is_done = 0"
+        ).result_rows[0][0]
+        
+        if pending_mutations > 0:
+            log_info(f"Found {pending_mutations} pending mutations. Killing them to ensure clean switch...")
+            repo.client.command("KILL MUTATION WHERE table = 'breach_records' AND is_done = 0")
+            time.sleep(1) # Give it a second to register
+
         # 1. Drop Existing Indexes
         log_info("Dropping existing indexes...")
         repo.client.command("ALTER TABLE vault.breach_records DROP INDEX IF EXISTS idx_email", settings=turbo_settings)
