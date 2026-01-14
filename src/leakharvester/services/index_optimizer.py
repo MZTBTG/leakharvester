@@ -45,7 +45,7 @@ class HeuristicAnalyzer:
                 uniqExact({column}) as cardinality,
                 avg(length({column})) as avg_len,
                 count() as total_rows,
-                countMatches({column}, '[^a-zA-Z0-9]') as non_alnum_chars
+                sum(countMatches({column}, '[^a-zA-Z0-9]')) as non_alnum_chars
             FROM (SELECT {column} FROM {table} {sample_clause})
             """
             

@@ -1,16 +1,18 @@
 import struct
-import zstandard as zstd
-import nacl.pwhash
-import nacl.secret
-import nacl.utils
-import pyarrow as pa
 from pathlib import Path
-from typing import Iterator, Optional, IO
+from typing import Iterator, Optional, IO, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import zstandard as zstd
+    import nacl.pwhash
+    import nacl.secret
+    import nacl.utils
+    import pyarrow as pa
 
 # File Format Constants
 MAGIC_BYTES = b'LH01'
 FLAG_ENCRYPTED = 0x01
-SALT_SIZE = nacl.pwhash.argon2id.SALTBYTES
+SALT_SIZE = 16 # nacl.pwhash.argon2id.SALTBYTES is 16
 CHUNK_SIZE = 1024 * 1024 * 4  # 4MB Buffer for Encryption
 
 class LHError(Exception):
@@ -19,12 +21,15 @@ class LHError(Exception):
 class CryptoEngine:
     def __init__(self, password: Optional[str] = None):
         self.password = password.encode() if password else None
-        self.box: Optional[nacl.secret.SecretBox] = None
+        self.box: Optional["nacl.secret.SecretBox"] = None
 
     def derive_key_and_init(self, salt: bytes) -> None:
         """Derives a 32-byte key using Argon2id and initializes the SecretBox."""
         if not self.password:
             raise LHError("Password required for key derivation")
+        
+        import nacl.pwhash
+        import nacl.secret
         
         # Sensitive profile: m=1GB (approx), t=4, p=1 (libsodium defaults usually)
         # This meets the prompt's high security requirement.
@@ -136,12 +141,16 @@ class SecureIO:
     @staticmethod
     def export_data(
         output_path: Path,
-        arrow_stream: Iterator[pa.RecordBatch],
-        schema: pa.Schema,
+        arrow_stream: Iterator["pa.RecordBatch"],
+        schema: "pa.Schema",
         password: Optional[str] = None,
         compression_level: int = 3
     ) -> None:
         """Pipeline: Arrow -> ZSTD -> Crypto -> File"""
+        import zstandard as zstd
+        import nacl.utils
+        import pyarrow as pa
+        
         crypto = CryptoEngine(password)
         flags = 0x00
         salt = b''
@@ -180,7 +189,7 @@ class SecureIO:
     def import_data(
         input_path: Path,
         password: Optional[str] = None
-    ) -> Iterator[pa.RecordBatch]:
+    ) -> Iterator["pa.RecordBatch"]:
         """Pipeline: File -> Crypto -> ZSTD -> Arrow"""
         if not input_path.exists():
             raise FileNotFoundError(f"File not found: {input_path}")
@@ -206,7 +215,11 @@ class SecureIO:
         return SecureIO._stream_generator(input_path, password)
 
     @staticmethod
-    def _stream_generator(input_path: Path, password: Optional[str]) -> Iterator[pa.RecordBatch]:
+    def _stream_generator(input_path: Path, password: Optional[str]) -> Iterator["pa.RecordBatch"]:
+        import zstandard as zstd
+        import pyarrow as pa
+        import nacl.pwhash
+        
         with open(input_path, 'rb') as f:
             # Skip Header (Already validated)
             f.read(5) 

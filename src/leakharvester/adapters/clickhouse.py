@@ -1,9 +1,12 @@
-import clickhouse_connect
-from clickhouse_connect.driver.client import Client
-import pyarrow as pa
 import threading
+from typing import TYPE_CHECKING, List, Tuple
 from leakharvester.ports.repository import BreachRepository
 from leakharvester.config import settings
+
+if TYPE_CHECKING:
+    import clickhouse_connect
+    from clickhouse_connect.driver.client import Client
+    import pyarrow as pa
 
 class ClickHouseAdapter(BreachRepository):
     def __init__(self) -> None:
@@ -21,8 +24,9 @@ class ClickHouseAdapter(BreachRepository):
         }
 
     @property
-    def client(self) -> Client:
+    def client(self) -> "Client":
         if not hasattr(self._thread_local, 'client'):
+            import clickhouse_connect
             self._thread_local.client = clickhouse_connect.get_client(
                 host=self.host,
                 port=self.port,
@@ -33,7 +37,7 @@ class ClickHouseAdapter(BreachRepository):
             )
         return self._thread_local.client
 
-    def insert_arrow_batch(self, table: pa.Table, table_name: str) -> None:
+    def insert_arrow_batch(self, table: "pa.Table", table_name: str) -> None:
         # ClickHouse Connect handles PyArrow tables directly
         self.client.insert_arrow(
             table=table_name,
@@ -63,6 +67,12 @@ class ClickHouseAdapter(BreachRepository):
         db, table = table_name.split('.') if '.' in table_name else (self.database, table_name)
         result = self.client.query(f"SELECT name FROM system.columns WHERE database = '{db}' AND table = '{table}'")
         return [row[0] for row in result.result_rows]
+
+    def get_columns_with_types(self, table_name: str) -> list[tuple[str, str]]:
+        """Returns a list of (name, type) tuples for the specified table."""
+        db, table = table_name.split('.') if '.' in table_name else (self.database, table_name)
+        result = self.client.query(f"SELECT name, type FROM system.columns WHERE database = '{db}' AND table = '{table}'")
+        return [(row[0], row[1]) for row in result.result_rows]
 
     def add_column(self, table_name: str, column_name: str, column_type: str = "String CODEC(ZSTD(3))") -> None:
         """Adds a new column to the table."""
@@ -111,6 +121,12 @@ class ClickHouseAdapter(BreachRepository):
         db, table = table_name.split('.') if '.' in table_name else (self.database, table_name)
         sql = f"SELECT name, type, expr, granularity FROM system.data_skipping_indices WHERE database = '{db}' AND table = '{table}'"
         return self.client.query(sql).result_rows
+
+    def get_partitions(self, table_name: str) -> list[str]:
+        """Returns list of active partition IDs for the table."""
+        db, table = table_name.split('.') if '.' in table_name else (self.database, table_name)
+        sql = f"SELECT distinct partition_id FROM system.parts WHERE database = '{db}' AND table = '{table}' AND active = 1"
+        return [row[0] for row in self.client.query(sql).result_rows]
 
     def close(self) -> None:
         # Best effort close for current thread

@@ -159,7 +159,7 @@ def test_ingest_cleanup_on_error(temp_dirs):
     raw, staging, quarantine = temp_dirs
     
     csv_path = raw / "broken.csv"
-    csv_path.write_text("email,pass\nval,val") # Valid content
+    csv_path.write_text("email,pass\ntest@example.com,val") # Valid content
     
     repo = MockRepository()
     fs = LocalFileSystemAdapter()
