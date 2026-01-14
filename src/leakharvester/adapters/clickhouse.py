@@ -117,9 +117,18 @@ class ClickHouseAdapter(BreachRepository):
         return self.client.query(sql).result_rows
 
     def get_indices(self, table_name: str) -> list:
-        """Returns list of skipping indices."""
+        """Returns list of skipping indices with size."""
         db, table = table_name.split('.') if '.' in table_name else (self.database, table_name)
-        sql = f"SELECT name, type, expr, granularity FROM system.data_skipping_indices WHERE database = '{db}' AND table = '{table}'"
+        sql = f"""
+        SELECT 
+            name, 
+            type, 
+            expr, 
+            granularity,
+            formatReadableSize(data_compressed_bytes) as size
+        FROM system.data_skipping_indices 
+        WHERE database = '{db}' AND table = '{table}'
+        """
         return self.client.query(sql).result_rows
 
     def get_partitions(self, table_name: str) -> list[str]:

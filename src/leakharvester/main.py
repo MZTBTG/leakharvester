@@ -127,9 +127,16 @@ def index(
         table.add_column("Column", style="magenta")
         table.add_column("Type", style="green")
         table.add_column("Granularity")
+        table.add_column("Size", justify="right", style="bold yellow")
         
         for i in idxs:
-            table.add_row(i['name'], i['column'], i['type'], str(i['granularity']))
+            table.add_row(
+                i['name'], 
+                i['column'], 
+                i['type'], 
+                str(i['granularity']), 
+                i.get('size', 'N/A')
+            )
         console.print(table)
         return
 
@@ -709,9 +716,12 @@ def info(
     idx_table.add_column("Index Name", style="yellow")
     idx_table.add_column("Type")
     idx_table.add_column("Granularity")
+    idx_table.add_column("Size", justify="right")
     
     for idx in indices:
-        idx_table.add_row(idx[0], idx[1], str(idx[3]))
+        # Tuple is now (name, type, expr, granularity, size)
+        size_str = idx[4] if len(idx) > 4 else "N/A"
+        idx_table.add_row(idx[0], idx[1], str(idx[3]), size_str)
         
     idx_panel = Panel(
         idx_table,

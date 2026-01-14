@@ -119,11 +119,7 @@ class IndexManager:
 
     def list_indexes(self) -> List[Dict[str, Any]]:
         raw = self.repo.get_indices(self.table)
-        # raw: [(name, type, expr, granularity), ...]
-        # We need size. 'system.data_skipping_indices' doesn't strictly give size easily per index 
-        # without querying system.data_skipping_indices_size (if available) or estimating.
-        # ClickHouse stores index files separate.
-        # We will list what we have.
+        # raw: [(name, type, expr, granularity, size), ...]
         
         indexes = []
         for r in raw:
@@ -131,7 +127,8 @@ class IndexManager:
                 "name": r[0],
                 "type": r[1],
                 "column": r[2].split(" ")[0] if " " in r[2] else r[2], # Rough parse of expr
-                "granularity": r[3]
+                "granularity": r[3],
+                "size": r[4] if len(r) > 4 else "N/A"
             })
         return indexes
 
