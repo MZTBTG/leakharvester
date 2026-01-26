@@ -8,7 +8,7 @@
     - [ ] Write failing tests for `db` command logic.
     - [ ] Move `db` command logic from `src/leakharvester/main.py` to `src/leakharvester/cli/commands/db.py`.
     - [ ] Verify functionality and pass tests.
-- [ ] Task: Conductor - User Manual Verification 'Phase 1: Scaffolding and DB Command' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 1: Scaffolding and DB Command' (Protocol in workflow.md) [checkpoint: e0d0db7]
 
 ## Phase 2: Indexing and Search
 - [ ] Task: Refactor `index` command.
