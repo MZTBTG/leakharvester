@@ -10,6 +10,7 @@ from leakharvester.cli.commands.search import search_command
 app = typer.Typer(
     help="LeakHarvester: High-performance breach data ingestion and search engine.",
     add_completion=False,
+    rich_markup_mode="rich",
 )
 console = Console()
 
