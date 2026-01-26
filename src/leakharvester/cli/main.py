@@ -7,6 +7,8 @@ from leakharvester.cli.commands.db import db_command
 from leakharvester.cli.commands.index import index_command
 from leakharvester.cli.commands.search import search_command
 from leakharvester.cli.commands.ingest import ingest_command
+from leakharvester.cli.commands.wipe import wipe_command
+from leakharvester.cli.commands.repair import repair_command
 
 app = typer.Typer(
     help="LeakHarvester: High-performance breach data ingestion and search engine.",
@@ -19,6 +21,8 @@ app.command(name="db")(db_command)
 app.command(name="index")(index_command)
 app.command(name="search")(search_command)
 app.command(name="ingest")(ingest_command)
+app.command(name="wipe")(wipe_command)
+app.command(name="repair")(repair_command)
 
 @app.callback()
 def main_callback():
