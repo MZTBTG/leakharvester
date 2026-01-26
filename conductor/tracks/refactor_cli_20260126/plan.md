@@ -26,7 +26,7 @@
     - [ ] Write failing tests for `ingest` command.
     - [ ] Move `ingest` command logic to `src/leakharvester/cli/commands/ingest.py`.
     - [ ] Verify functionality and pass tests.
-- [ ] Task: Refactor `wipe` and `repair` commands.
+- [x] Task: Refactor `wipe` and `repair` commands. 0a818dd
     - [ ] Write failing tests for `wipe` and `repair`.
     - [ ] Move logic to `src/leakharvester/cli/commands/wipe.py` and `src/leakharvester/cli/commands/repair.py`.
     - [ ] Verify functionality and pass tests.
