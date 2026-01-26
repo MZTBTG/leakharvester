@@ -38,8 +38,8 @@
 - [x] Task: Conductor - User Manual Verification 'Phase 4: Info and Secure I/O' (Protocol in workflow.md) [checkpoint: e4a5127]
 
 ## Phase 5: Final Integration and Cleanup
-- [ ] Task: Wire up `src/leakharvester/cli/main.py` to include all subcommands.
-- [ ] Task: Update `pyproject.toml` entry point to point to new CLI location (if applicable, or make `src/leakharvester/main.py` alias the new one).
-- [ ] Task: Remove legacy code from `src/leakharvester/main.py`.
+- [x] Task: Wire up `src/leakharvester/cli/main.py` to include all subcommands.
+- [x] Task: Update `pyproject.toml` entry point to point to new CLI location (if applicable, or make `src/leakharvester/main.py` alias the new one). 3af61e4
+- [x] Task: Remove legacy code from `src/leakharvester/cli/main.py`. 94aa4f1
 - [ ] Task: Run full regression suite and coverage report.
 - [ ] Task: Conductor - User Manual Verification 'Phase 5: Final Integration and Cleanup' (Protocol in workflow.md)
