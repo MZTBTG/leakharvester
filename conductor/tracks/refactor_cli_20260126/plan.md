@@ -19,7 +19,7 @@
     - [ ] Write failing tests for `search` command.
     - [ ] Move `search` command logic to `src/leakharvester/cli/commands/search.py`.
     - [ ] Verify functionality and pass tests.
-- [ ] Task: Conductor - User Manual Verification 'Phase 2: Indexing and Search' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 2: Indexing and Search' (Protocol in workflow.md) [checkpoint: 882d667]
 
 ## Phase 3: Ingestion and Maintenance
 - [ ] Task: Refactor `ingest` command.
