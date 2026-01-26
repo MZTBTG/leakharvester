@@ -40,3 +40,6 @@ disallow_untyped_defs = true
 [tool.pytest.ini_options]
 addopts = "-ra -q --strict-markers"
 testpaths = ["tests"]
+
+[project.scripts]
+leakharvester = "leakharvester.cli.main:app"
