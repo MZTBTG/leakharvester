@@ -22,7 +22,7 @@
 - [x] Task: Conductor - User Manual Verification 'Phase 2: Indexing and Search' (Protocol in workflow.md) [checkpoint: 882d667]
 
 ## Phase 3: Ingestion and Maintenance
-- [ ] Task: Refactor `ingest` command.
+- [x] Task: Refactor `ingest` command. 39f55ed
     - [ ] Write failing tests for `ingest` command.
     - [ ] Move `ingest` command logic to `src/leakharvester/cli/commands/ingest.py`.
     - [ ] Verify functionality and pass tests.
