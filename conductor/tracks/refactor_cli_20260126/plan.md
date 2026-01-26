@@ -42,4 +42,4 @@
 - [x] Task: Update `pyproject.toml` entry point to point to new CLI location (if applicable, or make `src/leakharvester/main.py` alias the new one). 3af61e4
 - [x] Task: Remove legacy code from `src/leakharvester/cli/main.py`. 94aa4f1
 - [ ] Task: Run full regression suite and coverage report.
-- [ ] Task: Conductor - User Manual Verification 'Phase 5: Final Integration and Cleanup' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 5: Final Integration and Cleanup' (Protocol in workflow.md) [checkpoint: 8cc3e17]
