@@ -27,19 +27,3 @@ As versões abaixo representam o "Bleeding Edge" estável validado para Dezembro
 | **Polars** | `1.36.1` | ✅ Validado | Versão atual estável. A doc pedia `>=1.15.0`, o que é seguro. |
 | **ClickHouse Connect** | `0.9.2` | ✅ Validado | Driver oficial. Suporte robusto a Arrow/Numpy. |
 | **Typer** | `0.12.0+` | ✅ Validado | CLI Framework padrão da indústria moderna. |
-
-## 3. Validação Arquitetural: ClickHouse Indices
-
-A escolha entre **Token Bloom Filter (`tokenbf_v1`)** e **Inverted Index** foi reavaliada com base em benchmarks recentes:
-
-*   **Veredito:** **`tokenbf_v1` Mantido.**
-*   **Evidência:** Embora Índices Invertidos permitam buscas mais rápidas e complexas, sua pegada em disco é significativamente maior (mapas exatos de termos). Para o requisito de "eficiência extrema de armazenamento" em um único NVMe de 1TB, o `tokenbf_v1` (que ocupa ~0.1% do tamanho dos dados) é a única escolha viável para maximizar a retenção de dados. A latência de busca levemente maior é um trade-off aceito.
-
-## 4. Próximos Passos de Configuração
-
-1.  **Inicialização do Projeto:** `uv init` e configuração do `pyproject.toml`.
-2.  **Estrutura de Diretórios:** Criação da Arquitetura Hexagonal.
-3.  **Setup do ClickHouse:** Docker Compose com limites de recursos ajustados para o i5-13600K (evitando OOM no host).
-
----
-*Este arquivo deve ser atualizado sempre que houver mudanças de hardware ou upgrade de dependências críticas.*
