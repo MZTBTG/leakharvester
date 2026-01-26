@@ -30,7 +30,7 @@
     - [ ] Write failing tests for `wipe` and `repair`.
     - [ ] Move logic to `src/leakharvester/cli/commands/wipe.py` and `src/leakharvester/cli/commands/repair.py`.
     - [ ] Verify functionality and pass tests.
-- [ ] Task: Conductor - User Manual Verification 'Phase 3: Ingestion and Maintenance' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 3: Ingestion and Maintenance' (Protocol in workflow.md) [checkpoint: 59c3ff6]
 
 ## Phase 4: Info and Secure I/O
 - [ ] Task: Refactor `info` command.
