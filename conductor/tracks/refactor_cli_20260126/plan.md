@@ -11,7 +11,7 @@
 - [x] Task: Conductor - User Manual Verification 'Phase 1: Scaffolding and DB Command' (Protocol in workflow.md) [checkpoint: e0d0db7]
 
 ## Phase 2: Indexing and Search
-- [ ] Task: Refactor `index` command.
+- [x] Task: Refactor `index` command. 4d5c71f
     - [ ] Write failing tests for `index` command.
     - [ ] Move `index` command logic to `src/leakharvester/cli/commands/index.py`.
     - [ ] Verify functionality and pass tests.
