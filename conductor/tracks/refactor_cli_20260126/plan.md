@@ -4,7 +4,7 @@
 - [x] Task: Create new directory structure `src/leakharvester/cli/commands` and `src/leakharvester/cli/__init__.py`. 3e62a55
     - [ ] Create `src/leakharvester/cli/commands/__init__.py`
     - [ ] Create `src/leakharvester/cli/main.py` as the new entry point.
-- [ ] Task: Refactor `db` command.
+- [x] Task: Refactor `db` command. b69be9b
     - [ ] Write failing tests for `db` command logic.
     - [ ] Move `db` command logic from `src/leakharvester/main.py` to `src/leakharvester/cli/commands/db.py`.
     - [ ] Verify functionality and pass tests.
