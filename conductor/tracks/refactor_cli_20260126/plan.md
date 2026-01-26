@@ -33,14 +33,8 @@
 - [x] Task: Conductor - User Manual Verification 'Phase 3: Ingestion and Maintenance' (Protocol in workflow.md) [checkpoint: 59c3ff6]
 
 ## Phase 4: Info and Secure I/O
-- [ ] Task: Refactor `info` command.
-    - [ ] Write failing tests for `info` command.
-    - [ ] Move `info` logic to `src/leakharvester/cli/commands/info.py`.
-    - [ ] Verify functionality and pass tests.
-- [ ] Task: Refactor `export` and `import` commands.
-    - [ ] Write failing tests for `export` and `import`.
-    - [ ] Move logic to `src/leakharvester/cli/commands/secure_io.py`.
-    - [ ] Verify functionality and pass tests.
+- [x] Task: Refactor `info` command. 35f549b
+- [x] Task: Refactor `export` and `import` commands. 35f549b
 - [ ] Task: Conductor - User Manual Verification 'Phase 4: Info and Secure I/O' (Protocol in workflow.md)
 
 ## Phase 5: Final Integration and Cleanup
