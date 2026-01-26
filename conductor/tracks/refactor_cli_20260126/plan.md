@@ -35,7 +35,7 @@
 ## Phase 4: Info and Secure I/O
 - [x] Task: Refactor `info` command. 35f549b
 - [x] Task: Refactor `export` and `import` commands. 35f549b
-- [ ] Task: Conductor - User Manual Verification 'Phase 4: Info and Secure I/O' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 4: Info and Secure I/O' (Protocol in workflow.md) [checkpoint: e4a5127]
 
 ## Phase 5: Final Integration and Cleanup
 - [ ] Task: Wire up `src/leakharvester/cli/main.py` to include all subcommands.
