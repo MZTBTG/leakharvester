@@ -15,7 +15,7 @@
     - [ ] Write failing tests for `index` command.
     - [ ] Move `index` command logic to `src/leakharvester/cli/commands/index.py`.
     - [ ] Verify functionality and pass tests.
-- [ ] Task: Refactor `search` command.
+- [x] Task: Refactor `search` command. d0adc17
     - [ ] Write failing tests for `search` command.
     - [ ] Move `search` command logic to `src/leakharvester/cli/commands/search.py`.
     - [ ] Verify functionality and pass tests.
