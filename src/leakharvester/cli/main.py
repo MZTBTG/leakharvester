@@ -2,7 +2,6 @@
 LeakHarvester CLI entry point.
 """
 import typer
-import rich_click.typer as typer
 import rich_click
 from rich.console import Console
 from leakharvester.cli.commands.db import db_command
@@ -30,7 +29,7 @@ rich_click.rich_click.STYLE_HELPTEXT_FIRST_LINE = "bold cyan"
 # without monkeypatching, but limiting MAX_WIDTH helps.
 # For Errors, we want them to be distinct.
 
-app = rich_click.typer.Typer(
+app = typer.Typer(
     help="LeakHarvester: High-performance breach data ingestion and search engine.",
     add_completion=False,
     rich_markup_mode="rich",
