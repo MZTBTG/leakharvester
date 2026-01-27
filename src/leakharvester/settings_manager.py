@@ -24,7 +24,11 @@ class SettingsManager:
         if self.local_config.exists():
             return self._read_json(self.local_config)
             
-        return {} # Default empty settings
+        # If no config exists, create a default one in home_config
+        log_info(f"No configuration found. Creating default settings at {self.home_config}")
+        default_settings: Dict[str, Any] = {}
+        self.save_settings(default_settings, local=False)
+        return default_settings
 
     def _read_json(self, path: Path) -> Dict[str, Any]:
         try:
