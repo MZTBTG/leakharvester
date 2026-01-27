@@ -13,9 +13,7 @@ import shutil
 import subprocess
 import time
 
-# Helper function (previously in main.py)
 def ensure_db_running():
-    """Checks if ClickHouse is running; attempts to start it via Docker if not."""
     host = settings.CLICKHOUSE_HOST or "localhost"
     port = settings.CLICKHOUSE_PORT or 8123
     ping_url = f"http://{host}:{port}/ping"
@@ -32,22 +30,17 @@ def ensure_db_running():
 
     log_warning("Database unreachable. Checking for Docker environment...")
 
-    # Load configured DB path
     sm = SettingsManager()
     active_path = sm.get_active_db_path()
     
-    # Prepare environment variables for Docker
     env = os.environ.copy()
     if active_path:
         env["DB_VOLUME_PATH"] = str(active_path.resolve())
     else:
-        # Default behavior if no path configured
         env["DB_VOLUME_PATH"] = "./data/clickhouse_data"
 
-    # Detect Docker command (prefer 'docker compose', fallback to 'docker-compose')
     docker_cmd = None
     if shutil.which("docker"):
-        # Check if 'docker compose' subcommand works
         try:
             subprocess.run(["docker", "compose", "version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
             docker_cmd = ["docker", "compose"]
@@ -62,14 +55,12 @@ def ensure_db_running():
         log_info("Please ensure ClickHouse is running manually at localhost:8123.")
         return
     
-    # Check for docker-compose.yml or compose.yaml
     if not (Path("docker-compose.yml").exists() or Path("compose.yaml").exists()):
         log_warning("No docker-compose.yml found. Cannot auto-start database.")
         return
 
     log_info(f"Starting ClickHouse via Docker (Volume: {env['DB_VOLUME_PATH']})...")
     try:
-        # Check if container is just stopped or needs to be created
         subprocess.run(docker_cmd + ["up", "-d", "clickhouse"], check=True, env=env, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
         err_msg = e.stderr.lower()
@@ -82,7 +73,6 @@ def ensure_db_running():
             log_error(f"Failed to start Docker container: {e.stderr}")
         raise typer.Exit(1)
 
-    # Wait for health
     log_info("Waiting for database to initialize...")
     for i in range(60):
         if is_online():
@@ -125,23 +115,16 @@ def db_command(
     remove: bool = typer.Option(False, "--remove", "-r", help="Remove the active database data (Stop & Delete)."),
     reset_all: bool = typer.Option(False, "--reset-all", help="FACTORY RESET: Wipes Config, Data, and Docker containers.")
 ):
-    """
-    Database Lifecycle Management.
-    """
     sm = SettingsManager()
     console = Console()
 
-    # 1. PATH MANAGEMENT
     if path:
         if path.exists():
             if not path.is_dir():
                 log_error(f"Path {path} is not a directory.")
                 raise typer.Exit(1)
             
-            # Check for emptiness or validity
             if any(path.iterdir()):
-                # Simple check for our expected format (clickhouse structure)
-                # Just a warning/info, don't block
                 log_info(f"Directory {path} is not empty.")
             else:
                 log_info(f"Directory {path} is empty.")
@@ -156,7 +139,6 @@ def db_command(
                 log_success(f"Created and set active path: {path.resolve()}")
         return
 
-    # 2. STATUS
     if status:
         active_path = sm.get_active_db_path()
         console.print(f"[bold]Active Configured Path:[/bold] {active_path or '[dim]Not configured (Using defaults)[/dim]'}")
@@ -171,7 +153,6 @@ def db_command(
             console.print(f"[red]Database connection failed:[/red] {e}")
         return
 
-    # 3. FILE LISTING
     if lsfiles:
         ensure_db_running()
         try:
@@ -211,7 +192,6 @@ def db_command(
             log_error(f"Failed to list files: {e}")
         return
 
-    # 4. SELECTIVE DELETION
     if rmfile:
         ensure_db_running()
         filenames = [f.strip() for f in rmfile.split(",") if f.strip()]
@@ -222,25 +202,14 @@ def db_command(
         try:
             repo = ClickHouseAdapter()
             
-            # 1. Validation: Get all valid files
             valid_files_result = repo.client.query("SELECT DISTINCT source_file FROM vault.breach_records")
             valid_files = {row[0] for row in valid_files_result.result_rows}
             
-            # 2. Check for invalid files
             invalid_files = [f for f in filenames if f not in valid_files]
             
             if invalid_files:
                 log_error(f"Error: File(s) not found: {', '.join(invalid_files)}")
                 log_info("Showing available files...")
-                # Recursively call db_command with lsfiles=True to show the table
-                # We can just run the logic directly since we are in the function
-                # But calling it recursively is cleaner if we handle recursion depth, but here simple logic reuse is better.
-                # Re-using lsfiles logic block by calling the function again or refactoring.
-                # Given typer structure, calling function again might need context. 
-                # Let's just run the query and print table again (Copy of lsfiles logic or refactor).
-                # Refactoring 'lsfiles' logic into a helper would be best, but for now let's just trigger the display.
-                
-                # Trigger lsfiles display manually
                 query = """
                     SELECT 
                         source_file,
@@ -263,12 +232,10 @@ def db_command(
                     console.print(table)
                 return
 
-            # 3. Confirmation and Execution
             if Confirm.ask(f"Are you sure you want to delete data for {len(filenames)} file(s)?"):
                 files_str = "', '".join(filenames)
                 log_info(f"Deleting data for: {filenames}...")
                 
-                # Execute DELETE mutation
                 delete_sql = f"ALTER TABLE vault.breach_records DELETE WHERE source_file IN ('{files_str}')"
                 repo.client.command(delete_sql)
                 log_success("Delete mutation submitted.")
@@ -281,7 +248,6 @@ def db_command(
             log_error(f"Failed to remove files: {e}")
         return
 
-    # 5. TRUNCATE ALL
     if allfiles:
         ensure_db_running()
         console.print("[bold red]DANGER: This will TRUNCATE the entire database. All data will be lost instantly.[/bold red]")
@@ -300,14 +266,12 @@ def db_command(
             log_error(f"Failed to truncate database: {e}")
         return
 
-    # 6. INITIALIZATION
     if init:
         ensure_db_running()
         try:
             settings.create_dirs()
             repo = ClickHouseAdapter()
             
-            # Execute DDL statements sequentially
             statements = DDL_SQL.split(";")
             for statement in statements:
                 if statement.strip():
@@ -319,7 +283,6 @@ def db_command(
             raise typer.Exit(code=1)
         return
 
-    # 4. REMOVE
     if remove:
         active_path = sm.get_active_db_path()
         if not active_path:
@@ -327,20 +290,16 @@ def db_command(
             return
 
         if Confirm.ask(f"[bold red]DANGER:[/bold red] Stop DB and DELETE all data at {active_path}?"):
-            # Stop Docker
             subprocess.run(["docker", "compose", "down"], check=False)
-            # Delete files
             try:
                 shutil.rmtree(active_path)
                 log_success(f"Deleted {active_path}")
             except Exception as e:
-                # Check for Permission Error (Errno 13)
                 if isinstance(e, PermissionError) or (hasattr(e, 'errno') and e.errno == 13):
                     log_warning("Permission denied on host (Docker-created files). Attempting force removal via Docker...")
                     try:
                         parent = active_path.resolve().parent
                         target = active_path.name
-                        # Use the existing image to remove files as root
                         cmd = [
                             "docker", "run", "--rm",
                             "-v", f"{parent}:/cleanup_mount",
@@ -359,7 +318,6 @@ def db_command(
                 log_error(f"Failed to delete {active_path}: {e}")
         return
 
-    # 5. FACTORY RESET
     if reset_all:
         console.print("[bold red]FACTORY RESET PROTOCOL INITIATED[/bold red]")
         steps = [
@@ -379,7 +337,6 @@ def db_command(
             log_info("Reset cancelled.")
             return
             
-        # Execute
         log_info("Stopping Docker...")
         subprocess.run(["docker", "compose", "down", "-v"], check=False)
         
@@ -397,7 +354,6 @@ def db_command(
         log_success("Factory Reset Complete. System is clean.")
         return
 
-    # Default: Show current config
     active_path = sm.get_active_db_path()
     if active_path:
         log_info(f"Active Database: {active_path}")
