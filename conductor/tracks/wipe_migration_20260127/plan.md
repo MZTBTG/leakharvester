@@ -1,18 +1,18 @@
 # Implementation Plan - Migrate Wipe Functionality to DB Command
 
 ## Phase 1: Setup & TDD
-- [~] Task: Create new test file `tests/test_cli_db_migration.py`
-    - [ ] Sub-task: Scaffold test file with `ClickHouseAdapter` mocks.
-- [ ] Task: Write failing tests for `--lsfiles`
-    - [ ] Sub-task: Test table output formatting (Rich Console).
-    - [ ] Sub-task: Test empty database state.
-- [ ] Task: Write failing tests for `--rmfile`
-    - [ ] Sub-task: Test successful deletion of single and multiple files.
-    - [ ] Sub-task: Test validation error (file not found) and automatic table listing.
-    - [ ] Sub-task: Test user cancellation at confirmation prompt.
-- [ ] Task: Write failing tests for `--allfiles`
-    - [ ] Sub-task: Test successful truncation with correct confirmation input ("wipe").
-    - [ ] Sub-task: Test abortion on incorrect confirmation input.
+- [x] Task: Create new test file `tests/test_cli_db_migration.py` [b24a777]
+    - [x] Sub-task: Scaffold test file with `ClickHouseAdapter` mocks.
+- [x] Task: Write failing tests for `--lsfiles` [b24a777]
+    - [x] Sub-task: Test table output formatting (Rich Console).
+    - [x] Sub-task: Test empty database state.
+- [x] Task: Write failing tests for `--rmfile` [b24a777]
+    - [x] Sub-task: Test successful deletion of single and multiple files.
+    - [x] Sub-task: Test validation error (file not found) and automatic table listing.
+    - [x] Sub-task: Test user cancellation at confirmation prompt.
+- [x] Task: Write failing tests for `--allfiles` [b24a777]
+    - [x] Sub-task: Test successful truncation with correct confirmation input ("wipe").
+    - [x] Sub-task: Test abortion on incorrect confirmation input.
 - [ ] Task: Conductor - User Manual Verification 'Phase 1: Setup & TDD' (Protocol in workflow.md)
 
 ## Phase 2: Implementation
