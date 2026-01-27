@@ -23,9 +23,9 @@
 - [x] Task: Conductor - User Manual Verification 'Phase 2: Error & Response Refactoring' (Protocol in workflow.md)
 
 ## Phase 3: Final Polish & Cleanup
-- [~] Task: Review and Polish `--help` Output
-    - [ ] Sub-task: Run `leakharvester --help` and subcommands (`db --help`).
-    - [ ] Sub-task: Tweak `rich-click` settings if help panels are still too wide or misaligned.
-- [ ] Task: Run Full Test Suite
-    - [ ] Sub-task: Ensure no regressions in existing functional tests.
+- [x] Task: Review and Polish `--help` Output
+    - [x] Sub-task: Run `leakharvester --help` and subcommands (`db --help`).
+    - [x] Sub-task: Tweak `rich-click` settings if help panels are still too wide or misaligned.
+- [x] Task: Run Full Test Suite
+    - [x] Sub-task: Ensure no regressions in existing functional tests.
 - [ ] Task: Conductor - User Manual Verification 'Phase 3: Final Polish & Cleanup' (Protocol in workflow.md)
