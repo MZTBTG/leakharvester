@@ -2,11 +2,11 @@
 
 ## Phase 1: Settings Integrity & ID Generation
 - [x] Task: Ensure `SettingsManager` handles missing `lh-settings.json` gracefully. [76b2452]
-    - [ ] Sub-task: Write tests for `SettingsManager` verifying behavior when `lh-settings.json` is missing (should create default).
-    - [ ] Sub-task: Implement creation logic in `SettingsManager` to generate the file in User Home/Installation paths if absent.
-- [ ] Task: Add `instance_id` to settings schema.
-    - [ ] Sub-task: Update `Settings` model to include an optional `instance_id` (UUID).
-    - [ ] Sub-task: Update tests to verify `instance_id` persistence and retrieval.
+    - [x] Sub-task: Write tests for `SettingsManager` verifying behavior when `lh-settings.json` is missing (should create default). [76b2452]
+    - [x] Sub-task: Implement creation logic in `SettingsManager` to generate the file in User Home/Installation paths if absent. [76b2452]
+- [x] Task: Add `instance_id` to settings schema. [4322c2d]
+    - [x] Sub-task: Update `Settings` model to include an optional `instance_id` (UUID). [4322c2d]
+    - [x] Sub-task: Update tests to verify `instance_id` persistence and retrieval. [4322c2d]
 - [ ] Task: Conductor - User Manual Verification 'Phase 1' (Protocol in workflow.md)
 
 ## Phase 2: Robust DB Initialization (Docker Lifecycle)
