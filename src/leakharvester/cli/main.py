@@ -3,6 +3,9 @@ LeakHarvester CLI entry point.
 """
 import typer
 import rich_click
+from rich_click.patch import patch
+patch()
+
 from rich.console import Console
 from leakharvester.cli.commands.db import db_command
 from leakharvester.cli.commands.index import index_command

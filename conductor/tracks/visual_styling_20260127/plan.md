@@ -12,7 +12,7 @@
 - [ ] Task: Conductor - User Manual Verification 'Phase 1: Setup & Configuration' (Protocol in workflow.md)
 - [ ] Task: Conductor - User Manual Verification 'Phase 1: Setup & Configuration' (Protocol in workflow.md)
 
-## Phase 2: Error & Response Refactoring
+## Phase 2: Error & Response Refactoring [checkpoint: 5ecb367]
 - [x] Task: Refactor Custom `log_error` in `src/leakharvester/adapters/console.py`
     - [x] Sub-task: Import `Panel` from `rich.panel`.
     - [x] Sub-task: Update `log_error` to print a `Panel` with `expand=False`.
@@ -20,10 +20,10 @@
 - [x] Task: Verify Typer/Click Error Output
     - [x] Sub-task: Create a temporary test script or manual verification step to trigger a Typer usage error (e.g., missing argument).
     - [x] Sub-task: Confirm that `rich-click` is automatically handling these errors with the configured adaptive style.
-- [ ] Task: Conductor - User Manual Verification 'Phase 2: Error & Response Refactoring' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Phase 2: Error & Response Refactoring' (Protocol in workflow.md)
 
 ## Phase 3: Final Polish & Cleanup
-- [ ] Task: Review and Polish `--help` Output
+- [~] Task: Review and Polish `--help` Output
     - [ ] Sub-task: Run `leakharvester --help` and subcommands (`db --help`).
     - [ ] Sub-task: Tweak `rich-click` settings if help panels are still too wide or misaligned.
 - [ ] Task: Run Full Test Suite
