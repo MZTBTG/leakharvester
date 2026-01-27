@@ -1,6 +1,7 @@
 import typer
 from pathlib import Path
 from rich.prompt import Prompt, Confirm
+from rich.table import Table
 from rich.console import Console
 from leakharvester.config import settings
 from leakharvester.adapters.console import log_info, log_success, log_error, log_warning
@@ -118,6 +119,9 @@ def db_command(
     path: Path = typer.Option(None, "--path", "-p", help="Set or query the active database path."),
     init: bool = typer.Option(False, "--init", help="Initialize the database at the configured path."),
     status: bool = typer.Option(False, "--status", "-s", help="Check database and Docker status."),
+    lsfiles: bool = typer.Option(False, "--lsfiles", help="List all ingested source files."),
+    rmfile: str = typer.Option(None, "--rmfile", help="Remove specific files (comma-separated)."),
+    allfiles: bool = typer.Option(False, "--allfiles", help="Wipe ALL data (Truncate Table). Instant space reclamation."),
     remove: bool = typer.Option(False, "--remove", "-r", help="Remove the active database data (Stop & Delete)."),
     reset_all: bool = typer.Option(False, "--reset-all", help="FACTORY RESET: Wipes Config, Data, and Docker containers.")
 ):
@@ -167,7 +171,136 @@ def db_command(
             console.print(f"[red]Database connection failed:[/red] {e}")
         return
 
-    # 3. INITIALIZATION
+    # 3. FILE LISTING
+    if lsfiles:
+        ensure_db_running()
+        try:
+            repo = ClickHouseAdapter()
+            query = """
+                SELECT 
+                    source_file,
+                    count() as row_count,
+                    min(import_date) as first_import,
+                    max(import_date) as last_import
+                FROM vault.breach_records
+                GROUP BY source_file
+                ORDER BY last_import DESC
+            """
+            result = repo.client.query(query)
+            
+            if not result.result_rows:
+                console.print("[yellow]No files found in database.[/yellow]")
+                return
+
+            table = Table(title="Ingested Files Registry")
+            table.add_column("Source File", style="cyan", no_wrap=True)
+            table.add_column("Row Count", justify="right", style="magenta")
+            table.add_column("First Import", justify="right", style="green")
+            table.add_column("Last Import", justify="right", style="green")
+
+            for row in result.result_rows:
+                table.add_row(
+                    row[0],
+                    f"{row[1]:,}",
+                    str(row[2]),
+                    str(row[3])
+                )
+            
+            console.print(table)
+        except Exception as e:
+            log_error(f"Failed to list files: {e}")
+        return
+
+    # 4. SELECTIVE DELETION
+    if rmfile:
+        ensure_db_running()
+        filenames = [f.strip() for f in rmfile.split(",") if f.strip()]
+        if not filenames:
+            log_error("No valid filenames provided.")
+            return
+
+        try:
+            repo = ClickHouseAdapter()
+            
+            # 1. Validation: Get all valid files
+            valid_files_result = repo.client.query("SELECT DISTINCT source_file FROM vault.breach_records")
+            valid_files = {row[0] for row in valid_files_result.result_rows}
+            
+            # 2. Check for invalid files
+            invalid_files = [f for f in filenames if f not in valid_files]
+            
+            if invalid_files:
+                log_error(f"Error: File(s) not found: {', '.join(invalid_files)}")
+                log_info("Showing available files...")
+                # Recursively call db_command with lsfiles=True to show the table
+                # We can just run the logic directly since we are in the function
+                # But calling it recursively is cleaner if we handle recursion depth, but here simple logic reuse is better.
+                # Re-using lsfiles logic block by calling the function again or refactoring.
+                # Given typer structure, calling function again might need context. 
+                # Let's just run the query and print table again (Copy of lsfiles logic or refactor).
+                # Refactoring 'lsfiles' logic into a helper would be best, but for now let's just trigger the display.
+                
+                # Trigger lsfiles display manually
+                query = """
+                    SELECT 
+                        source_file,
+                        count() as row_count,
+                        min(import_date) as first_import,
+                        max(import_date) as last_import
+                    FROM vault.breach_records
+                    GROUP BY source_file
+                    ORDER BY last_import DESC
+                """
+                result = repo.client.query(query)
+                if result.result_rows:
+                    table = Table(title="Ingested Files Registry (Valid Options)")
+                    table.add_column("Source File", style="cyan", no_wrap=True)
+                    table.add_column("Row Count", justify="right", style="magenta")
+                    table.add_column("First Import", justify="right", style="green")
+                    table.add_column("Last Import", justify="right", style="green")
+                    for row in result.result_rows:
+                        table.add_row(row[0], f"{row[1]:,}", str(row[2]), str(row[3]))
+                    console.print(table)
+                return
+
+            # 3. Confirmation and Execution
+            if Confirm.ask(f"Are you sure you want to delete data for {len(filenames)} file(s)?"):
+                files_str = "', '".join(filenames)
+                log_info(f"Deleting data for: {filenames}...")
+                
+                # Execute DELETE mutation
+                delete_sql = f"ALTER TABLE vault.breach_records DELETE WHERE source_file IN ('{files_str}')"
+                repo.client.command(delete_sql)
+                log_success("Delete mutation submitted.")
+                
+                log_info("Triggering OPTIMIZE TABLE FINAL to force physical disk cleanup...")
+                repo.client.command("OPTIMIZE TABLE vault.breach_records FINAL", settings={'receive_timeout': 3600})
+                log_success("Optimization complete.")
+
+        except Exception as e:
+            log_error(f"Failed to remove files: {e}")
+        return
+
+    # 5. TRUNCATE ALL
+    if allfiles:
+        ensure_db_running()
+        console.print("[bold red]DANGER: This will TRUNCATE the entire database. All data will be lost instantly.[/bold red]")
+        
+        confirmation = Prompt.ask("Type 'wipe' to confirm total data deletion")
+        if confirmation != "wipe":
+            log_info("Operation aborted.")
+            return
+
+        try:
+            repo = ClickHouseAdapter()
+            log_info("Executing TRUNCATE TABLE (Nuclear Option)...")
+            repo.client.command("TRUNCATE TABLE vault.breach_records", settings={'max_table_size_to_drop': 0})
+            log_success("Database truncated. Disk space should be reclaimed immediately.")
+        except Exception as e:
+            log_error(f"Failed to truncate database: {e}")
+        return
+
+    # 6. INITIALIZATION
     if init:
         ensure_db_running()
         try:

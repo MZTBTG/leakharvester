@@ -16,19 +16,19 @@
 - [ ] Task: Conductor - User Manual Verification 'Phase 1: Setup & TDD' (Protocol in workflow.md)
 
 ## Phase 2: Implementation
-- [ ] Task: Implement `--lsfiles` in `src/leakharvester/cli/commands/db.py`
-    - [ ] Sub-task: Add `lsfiles` boolean flag to `db_command`.
-    - [ ] Sub-task: Implement SQL query to fetch file stats.
-    - [ ] Sub-task: Render Rich Table with columns: Source File, Row Count, First Import, Last Import.
-- [ ] Task: Implement `--rmfile` in `src/leakharvester/cli/commands/db.py`
-    - [ ] Sub-task: Add `rmfile` string argument (comma-separated).
-    - [ ] Sub-task: Implement validation logic (fetch valid files, check subset).
-    - [ ] Sub-task: Implement error handling: Print error -> Run `lsfiles` logic.
-    - [ ] Sub-task: Implement deletion logic using `ALTER TABLE ... DELETE`.
-- [ ] Task: Implement `--allfiles` in `src/leakharvester/cli/commands/db.py`
-    - [ ] Sub-task: Add `allfiles` boolean flag.
-    - [ ] Sub-task: Implement "Type 'wipe' to confirm" safety prompt.
-    - [ ] Sub-task: Implement `TRUNCATE TABLE` execution.
+- [x] Task: Implement `--lsfiles` in `src/leakharvester/cli/commands/db.py`
+    - [x] Sub-task: Add `lsfiles` boolean flag to `db_command`.
+    - [x] Sub-task: Implement SQL query to fetch file stats.
+    - [x] Sub-task: Render Rich Table with columns: Source File, Row Count, First Import, Last Import.
+- [x] Task: Implement `--rmfile` in `src/leakharvester/cli/commands/db.py`
+    - [x] Sub-task: Add `rmfile` string argument (comma-separated).
+    - [x] Sub-task: Implement validation logic (fetch valid files, check subset).
+    - [x] Sub-task: Implement error handling: Print error -> Run `lsfiles` logic.
+    - [x] Sub-task: Implement deletion logic using `ALTER TABLE ... DELETE`.
+- [x] Task: Implement `--allfiles` in `src/leakharvester/cli/commands/db.py`
+    - [x] Sub-task: Add `allfiles` boolean flag.
+    - [x] Sub-task: Implement "Type 'wipe' to confirm" safety prompt.
+    - [x] Sub-task: Implement `TRUNCATE TABLE` execution.
 - [ ] Task: Conductor - User Manual Verification 'Phase 2: Implementation' (Protocol in workflow.md)
 
 ## Phase 3: Deprecation & Cleanup
