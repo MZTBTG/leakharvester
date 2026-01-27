@@ -24,7 +24,11 @@ class SettingsManager:
         if self.local_config.exists():
             return self._read_json(self.local_config)
             
-        return {} # Default empty settings
+        # If no config exists, create a default one in home_config
+        log_info(f"No configuration found. Creating default settings at {self.home_config}")
+        default_settings: Dict[str, Any] = {}
+        self.save_settings(default_settings, local=False)
+        return default_settings
 
     def _read_json(self, path: Path) -> Dict[str, Any]:
         try:
@@ -50,6 +54,13 @@ class SettingsManager:
 
     def set_active_db_path(self, path: Path, local: bool = False) -> None:
         self._settings["active_db_path"] = str(path.resolve())
+        self.save_settings(self._settings, local=local)
+
+    def get_instance_id(self) -> Optional[str]:
+        return self._settings.get("instance_id")
+
+    def set_instance_id(self, instance_id: str, local: bool = False) -> None:
+        self._settings["instance_id"] = instance_id
         self.save_settings(self._settings, local=local)
 
     def get_all(self) -> Dict[str, Any]:
