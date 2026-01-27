@@ -31,7 +31,7 @@
     - [x] Sub-task: Implement `TRUNCATE TABLE` execution.
 - [ ] Task: Conductor - User Manual Verification 'Phase 2: Implementation' (Protocol in workflow.md)
 
-## Phase 3: Deprecation & Cleanup
+## Phase 3: Deprecation & Cleanup [checkpoint: d482579]
 - [x] Task: Remove `wipe` command
     - [x] Sub-task: Delete `src/leakharvester/cli/commands/wipe.py`.
     - [x] Sub-task: Remove `wipe` command registration from `src/leakharvester/cli/main.py`.
