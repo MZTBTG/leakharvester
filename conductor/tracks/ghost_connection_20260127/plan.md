@@ -1,6 +1,6 @@
 # Implementation Plan - Ghost Connection Fix & Safe DB Switching
 
-## Phase 1: Settings Integrity & ID Generation
+## Phase 1: Settings Integrity & ID Generation [checkpoint: 541d89b]
 - [x] Task: Ensure `SettingsManager` handles missing `lh-settings.json` gracefully. [76b2452]
     - [x] Sub-task: Write tests for `SettingsManager` verifying behavior when `lh-settings.json` is missing (should create default). [76b2452]
     - [x] Sub-task: Implement creation logic in `SettingsManager` to generate the file in User Home/Installation paths if absent. [76b2452]
