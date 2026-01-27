@@ -10,10 +10,10 @@
 - [ ] Task: Conductor - User Manual Verification 'Phase 1' (Protocol in workflow.md)
 
 ## Phase 2: Robust DB Initialization (Docker Lifecycle)
-- [ ] Task: Refactor `db --init` command to enforce container recreation.
-    - [ ] Sub-task: Write tests mocking `docker compose` calls to verify the correct sequence: `down` -> `up --force-recreate`.
-    - [ ] Sub-task: Modify `commands/db.py` to execute `docker compose down` before starting.
-    - [ ] Sub-task: Ensure the new `active_db_path` is correctly written to `.env` or passed to the subprocess before restart.
+- [x] Task: Refactor `db --init` command to enforce container recreation. [13845e2]
+    - [x] Sub-task: Write tests mocking `docker compose` calls to verify the correct sequence: `down` -> `up --force-recreate`. [13845e2]
+    - [x] Sub-task: Modify `commands/db.py` to execute `docker compose down` before starting. [13845e2]
+    - [x] Sub-task: Ensure the new `active_db_path` is correctly written to `.env` or passed to the subprocess before restart. [13845e2]
 - [ ] Task: Implement Server-Side Instance ID Storage.
     - [ ] Sub-task: Create a migration or init script to create a `system_info` table in ClickHouse.
     - [ ] Sub-task: Update `db --init` to generate a new UUID, save it to `lh-settings.json`, and insert it into the `system_info` table.
