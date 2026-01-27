@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import time
 
-def ensure_db_running():
+def ensure_db_running(force_restart: bool = False):
     host = settings.CLICKHOUSE_HOST or "localhost"
     port = settings.CLICKHOUSE_PORT or 8123
     ping_url = f"http://{host}:{port}/ping"
@@ -25,10 +25,11 @@ def ensure_db_running():
         except Exception:
             return False
 
-    if is_online():
+    if not force_restart and is_online():
         return
 
-    log_warning("Database unreachable. Checking for Docker environment...")
+    if force_restart:
+        log_warning("Forcing database restart to apply configuration changes...")
 
     sm = SettingsManager()
     active_path = sm.get_active_db_path()
@@ -59,9 +60,19 @@ def ensure_db_running():
         log_warning("No docker-compose.yml found. Cannot auto-start database.")
         return
 
+    if force_restart:
+        log_info("Stopping existing container...")
+        subprocess.run(docker_cmd + ["down"], check=False, env=env)
+
     log_info(f"Starting ClickHouse via Docker (Volume: {env['DB_VOLUME_PATH']})...")
+    
+    up_args = ["up", "-d"]
+    if force_restart:
+        up_args.append("--force-recreate")
+    up_args.append("clickhouse")
+
     try:
-        subprocess.run(docker_cmd + ["up", "-d", "clickhouse"], check=True, env=env, capture_output=True, text=True)
+        subprocess.run(docker_cmd + up_args, check=True, env=env, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
         err_msg = e.stderr.lower()
         if "permission denied" in err_msg and "docker.sock" in err_msg:
@@ -267,7 +278,7 @@ def db_command(
         return
 
     if init:
-        ensure_db_running()
+        ensure_db_running(force_restart=True)
         try:
             settings.create_dirs()
             repo = ClickHouseAdapter()
