@@ -1,6 +1,6 @@
 # Implementation Plan - Migrate Wipe Functionality to DB Command
 
-## Phase 1: Setup & TDD
+## Phase 1: Setup & TDD [checkpoint: a9eff7c]
 - [x] Task: Create new test file `tests/test_cli_db_migration.py` [b24a777]
     - [x] Sub-task: Scaffold test file with `ClickHouseAdapter` mocks.
 - [x] Task: Write failing tests for `--lsfiles` [b24a777]
