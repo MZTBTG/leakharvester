@@ -15,7 +15,7 @@
     - [x] Sub-task: Test abortion on incorrect confirmation input.
 - [ ] Task: Conductor - User Manual Verification 'Phase 1: Setup & TDD' (Protocol in workflow.md)
 
-## Phase 2: Implementation
+## Phase 2: Implementation [checkpoint: 6b574f2]
 - [x] Task: Implement `--lsfiles` in `src/leakharvester/cli/commands/db.py`
     - [x] Sub-task: Add `lsfiles` boolean flag to `db_command`.
     - [x] Sub-task: Implement SQL query to fetch file stats.
