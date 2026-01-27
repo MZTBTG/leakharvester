@@ -2,10 +2,7 @@
 LeakHarvester CLI entry point.
 """
 import typer
-import rich_click
-from rich_click.patch import patch
-patch()
-
+import click
 from rich.console import Console
 from leakharvester.cli.commands.db import db_command
 from leakharvester.cli.commands.index import index_command
@@ -14,23 +11,7 @@ from leakharvester.cli.commands.ingest import ingest_command
 from leakharvester.cli.commands.repair import repair_command
 from leakharvester.cli.commands.info import info_command
 from leakharvester.cli.commands.secure_io import export_command, import_command
-
-# --- Rich-Click Configuration ---
-# Force adaptive width and disable full-width expansion
-rich_click.rich_click.USE_RICH_MARKUP = True
-rich_click.rich_click.USE_MARKDOWN = True
-rich_click.rich_click.SHOW_ARGUMENTS = True
-rich_click.rich_click.GROUP_ARGUMENTS_OPTIONS = True
-rich_click.rich_click.STYLE_ERRORS_SUGGESTION = "magenta italic"
-rich_click.rich_click.ERRORS_SUGGESTION = "Try running the '--help' flag for more information."
-rich_click.rich_click.ERRORS_EPILOGUE = "To find out more, visit https://github.com/mztb/leakharvester"
-rich_click.rich_click.MAX_WIDTH = 100  # Set a reasonable max width to prevent spanning ultra-wide terminals
-rich_click.rich_click.STYLE_HELPTEXT_FIRST_LINE = "bold cyan"
-
-# Panel Configuration for Adaptive Look
-# Note: rich-click doesn't expose a direct 'expand=False' for the main help panel easily 
-# without monkeypatching, but limiting MAX_WIDTH helps.
-# For Errors, we want them to be distinct.
+from leakharvester.adapters.console import log_error
 
 app = typer.Typer(
     help="LeakHarvester: High-performance breach data ingestion and search engine.",
@@ -56,4 +37,19 @@ def main_callback():
     pass
 
 if __name__ == "__main__":
-    app()
+    try:
+        app(standalone_mode=False)
+    except click.exceptions.Exit:
+        pass
+    except click.exceptions.UsageError as e:
+        log_error(f"{e.message}\n[italic]Try '{e.ctx.command_path} --help' for help.[/italic]")
+        exit(1)
+    except click.exceptions.Abort:
+        log_error("Aborted.")
+        exit(1)
+    except click.exceptions.ClickException as e:
+        log_error(f"{e.message}")
+        exit(1)
+    except Exception as e:
+        log_error(f"Unexpected Error: {e}")
+        exit(1)
