@@ -32,10 +32,10 @@
 - [ ] Task: Conductor - User Manual Verification 'Phase 2: Implementation' (Protocol in workflow.md)
 
 ## Phase 3: Deprecation & Cleanup
-- [ ] Task: Remove `wipe` command
-    - [ ] Sub-task: Delete `src/leakharvester/cli/commands/wipe.py`.
-    - [ ] Sub-task: Remove `wipe` command registration from `src/leakharvester/cli/main.py`.
-- [ ] Task: Verify Clean State
-    - [ ] Sub-task: Run full test suite to ensure no regressions.
-    - [ ] Sub-task: Verify `leakharvester --help` does not show `wipe`.
+- [x] Task: Remove `wipe` command
+    - [x] Sub-task: Delete `src/leakharvester/cli/commands/wipe.py`.
+    - [x] Sub-task: Remove `wipe` command registration from `src/leakharvester/cli/main.py`.
+- [x] Task: Verify Clean State
+    - [x] Sub-task: Run full test suite to ensure no regressions.
+    - [x] Sub-task: Verify `leakharvester --help` does not show `wipe`.
 - [ ] Task: Conductor - User Manual Verification 'Phase 3: Deprecation & Cleanup' (Protocol in workflow.md)
