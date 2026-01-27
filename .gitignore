@@ -35,6 +35,7 @@ venv.bak/
 # Testing
 docs/local*
 docs/local/
+conductor/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
