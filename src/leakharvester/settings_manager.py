@@ -56,5 +56,12 @@ class SettingsManager:
         self._settings["active_db_path"] = str(path.resolve())
         self.save_settings(self._settings, local=local)
 
+    def get_instance_id(self) -> Optional[str]:
+        return self._settings.get("instance_id")
+
+    def set_instance_id(self, instance_id: str, local: bool = False) -> None:
+        self._settings["instance_id"] = instance_id
+        self.save_settings(self._settings, local=local)
+
     def get_all(self) -> Dict[str, Any]:
         return self._settings
