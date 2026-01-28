@@ -20,10 +20,10 @@
 - [ ] Task: Conductor - User Manual Verification 'Phase 2' (Protocol in workflow.md)
 
 ## Phase 3: Safe Connection Adapter
-- [ ] Task: Implement "Safe Fail" logic in `ClickHouseAdapter`.
-    - [ ] Sub-task: Define `EnvironmentMismatchError` in `domain/exceptions.py`.
-    - [ ] Sub-task: Write integration tests:
+- [x] Task: Implement "Safe Fail" logic in `ClickHouseAdapter`. [bb5fcca]
+    - [x] Sub-task: Define `EnvironmentMismatchError` in `domain/exceptions.py`. [bb5fcca]
+    - [x] Sub-task: Write integration tests: [bb5fcca]
         -   Scenario A: IDs match -> Connection succeeds.
         -   Scenario B: IDs mismatch -> Connection raises `EnvironmentMismatchError`.
-    - [ ] Sub-task: Modify `ClickHouseAdapter.connect()` (or `__init__`) to query `system_info`, fetch the server ID, and compare with `Settings.instance_id`.
+    - [x] Sub-task: Modify `ClickHouseAdapter.connect()` (or `__init__`) to query `system_info`, fetch the server ID, and compare with `Settings.instance_id`. [bb5fcca]
 - [ ] Task: Conductor - User Manual Verification 'Phase 3' (Protocol in workflow.md)
