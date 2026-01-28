@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import time
+import uuid
 
 def ensure_db_running(force_restart: bool = False):
     host = settings.CLICKHOUSE_HOST or "localhost"
@@ -114,6 +115,13 @@ SETTINGS
     max_bytes_to_merge_at_min_space_in_pool = 10485760,
     min_bytes_for_wide_part = 10485760,
     old_parts_lifetime = 60;
+
+CREATE TABLE IF NOT EXISTS vault.system_info
+(
+    `key` String,
+    `value` String
+)
+ENGINE = TinyLog;
 """
 
 def db_command(
@@ -287,6 +295,14 @@ def db_command(
             for statement in statements:
                 if statement.strip():
                     repo.execute_ddl(statement)
+            
+            # Generate and Store Instance ID
+            instance_id = str(uuid.uuid4())
+            sm.set_instance_id(instance_id)
+            log_info(f"Generated Instance ID: {instance_id}")
+            
+            # Store ID in DB
+            repo.client.command("INSERT INTO vault.system_info (key, value) VALUES", [('instance_id', instance_id)])
             
             log_success(f"Database initialized at {sm.get_active_db_path() or 'default location'}.")
         except Exception as e:
