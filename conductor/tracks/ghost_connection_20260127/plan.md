@@ -19,11 +19,10 @@
     - [x] Sub-task: Update `db --init` to generate a new UUID, save it to `lh-settings.json`, and insert it into the `system_info` table. [d81d4ff]
 - [ ] Task: Conductor - User Manual Verification 'Phase 2' (Protocol in workflow.md)
 
-## Phase 3: Safe Connection Adapter
+## Phase 3: Safe Connection Adapter [REMOVED]
 - [x] Task: Implement "Safe Fail" logic in `ClickHouseAdapter`. [bb5fcca]
     - [x] Sub-task: Define `EnvironmentMismatchError` in `domain/exceptions.py`. [bb5fcca]
-    - [x] Sub-task: Write integration tests: [bb5fcca]
-        -   Scenario A: IDs match -> Connection succeeds.
-        -   Scenario B: IDs mismatch -> Connection raises `EnvironmentMismatchError`.
+    - [x] Sub-task: Write integration tests. [bb5fcca]
     - [x] Sub-task: Modify `ClickHouseAdapter.connect()` (or `__init__`) to query `system_info`, fetch the server ID, and compare with `Settings.instance_id`. [bb5fcca]
-- [ ] Task: Conductor - User Manual Verification 'Phase 3' (Protocol in workflow.md)
+    - [x] **NOTE:** Feature reverted in [2ebf2a9] per user request ("Remove the local_ID implementation"). Relying on Docker recreation (Phase 2) for safety.
+- [x] Task: Conductor - User Manual Verification 'Phase 3' (Protocol in workflow.md)
