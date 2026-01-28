@@ -19,7 +19,7 @@
     - [x] Sub-task: Update `db --init` to generate a new UUID, save it to `lh-settings.json`, and insert it into the `system_info` table. [d81d4ff]
 - [ ] Task: Conductor - User Manual Verification 'Phase 2' (Protocol in workflow.md)
 
-## Phase 3: Safe Connection Adapter [REMOVED]
+## Phase 3: Safe Connection Adapter [REMOVED] [checkpoint: a5c146c]
 - [x] Task: Implement "Safe Fail" logic in `ClickHouseAdapter`. [bb5fcca]
     - [x] Sub-task: Define `EnvironmentMismatchError` in `domain/exceptions.py`. [bb5fcca]
     - [x] Sub-task: Write integration tests. [bb5fcca]
