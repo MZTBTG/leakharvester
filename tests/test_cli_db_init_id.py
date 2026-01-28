@@ -29,7 +29,6 @@ def test_db_init_generates_and_stores_instance_id(tmp_path):
         result = runner.invoke(app, ["db", "--init"])
         
         # Verify ID saved to settings
-        # FAIL expected here
         sm_instance.set_instance_id.assert_called_with("test-uuid-1234")
         
         # Verify DDL executed for system_info table
@@ -37,12 +36,10 @@ def test_db_init_generates_and_stores_instance_id(tmp_path):
         create_calls = [call.args[0] for call in repo_instance.execute_ddl.call_args_list if create_table_sql_fragment in call.args[0]]
         assert create_calls, "system_info table was not created"
         
-        # Verify INSERT executed
-        execute_calls = [call.args[0] for call in repo_instance.client.command.call_args_list] + \
-                        [call.args[0] for call in repo_instance.execute_ddl.call_args_list]
-        
-        print(f"DEBUG CALLS: {execute_calls}") # Debugging
-
-        insert_found = any("INSERT INTO vault.system_info" in str(c) for c in execute_calls)
-        assert insert_found, "Instance ID insert statement not found"
+        # Verify INSERT executed using client.insert (not command)
+        repo_instance.client.insert.assert_called_with(
+            "vault.system_info",
+            [['instance_id', "test-uuid-1234"]],
+            column_names=['key', 'value']
+        )
 

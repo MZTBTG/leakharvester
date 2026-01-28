@@ -302,7 +302,7 @@ def db_command(
             log_info(f"Generated Instance ID: {instance_id}")
             
             # Store ID in DB
-            repo.client.command("INSERT INTO vault.system_info (key, value) VALUES", [('instance_id', instance_id)])
+            repo.client.insert("vault.system_info", [[ 'instance_id', instance_id ]], column_names=['key', 'value'])
             
             log_success(f"Database initialized at {sm.get_active_db_path() or 'default location'}.")
         except Exception as e:
