@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, List, Tuple
 from leakharvester.ports.repository import BreachRepository
 from leakharvester.config import settings
 from leakharvester.domain.exceptions import EnvironmentMismatchError
+from leakharvester.settings_manager import SettingsManager
 
 if TYPE_CHECKING:
     import clickhouse_connect
@@ -38,15 +39,18 @@ class ClickHouseAdapter(BreachRepository):
             )
             
             # Safe Fail: Instance ID Verification
-            if settings.INSTANCE_ID:
+            sm = SettingsManager()
+            local_id = sm.get_instance_id()
+            
+            if local_id:
                 try:
                     result = client.query("SELECT value FROM vault.system_info WHERE key = 'instance_id'")
                     server_id = result.result_rows[0][0] if result.result_rows else None
                     
-                    if server_id != settings.INSTANCE_ID:
+                    if server_id != local_id:
                         client.close()
                         raise EnvironmentMismatchError(
-                            f"Environment Mismatch! Local ID: {settings.INSTANCE_ID}, Server ID: {server_id}. "
+                            f"Environment Mismatch! Local ID: {local_id}, Server ID: {server_id}. "
                             "You may be connecting to the wrong database volume."
                         )
                 except Exception as e:
@@ -59,7 +63,7 @@ class ClickHouseAdapter(BreachRepository):
                     # Since we have a Local ID, we expect the DB to have one.
                     client.close()
                     raise EnvironmentMismatchError(
-                        f"Environment Mismatch! Local ID is {settings.INSTANCE_ID} but could not verify Server ID. "
+                        f"Environment Mismatch! Local ID is {local_id} but could not verify Server ID. "
                         f"Error: {e}"
                     )
 

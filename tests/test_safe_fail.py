@@ -9,7 +9,7 @@ def test_safe_fail_on_id_mismatch():
     when the local configured ID does not match the server-side ID.
     """
     with patch("clickhouse_connect.get_client") as mock_get_client, \
-         patch("leakharvester.adapters.clickhouse.settings") as mock_settings:
+         patch("leakharvester.adapters.clickhouse.SettingsManager") as MockSM:
         
         # Setup Client Mock
         mock_client_instance = MagicMock()
@@ -19,7 +19,8 @@ def test_safe_fail_on_id_mismatch():
         # Local ID: "local-uuid"
         # Server ID: "server-uuid"
         
-        mock_settings.INSTANCE_ID = "local-uuid"
+        mock_sm_instance = MockSM.return_value
+        mock_sm_instance.get_instance_id.return_value = "local-uuid"
         
         # Mock query response for server ID
         # Expected query: SELECT value FROM vault.system_info WHERE key = 'instance_id'
@@ -38,13 +39,14 @@ def test_success_on_id_match():
     Verifies that ClickHouseAdapter succeeds when IDs match.
     """
     with patch("clickhouse_connect.get_client") as mock_get_client, \
-         patch("leakharvester.adapters.clickhouse.settings") as mock_settings:
+         patch("leakharvester.adapters.clickhouse.SettingsManager") as MockSM:
         
         # Setup Client Mock
         mock_client_instance = MagicMock()
         mock_get_client.return_value = mock_client_instance
         
-        mock_settings.INSTANCE_ID = "match-uuid"
+        mock_sm_instance = MockSM.return_value
+        mock_sm_instance.get_instance_id.return_value = "match-uuid"
         
         # Mock query response for server ID
         mock_result = MagicMock()
@@ -63,12 +65,13 @@ def test_skip_check_if_no_local_id():
     we skip the check (or handle it gracefully).
     """
     with patch("clickhouse_connect.get_client") as mock_get_client, \
-         patch("leakharvester.adapters.clickhouse.settings") as mock_settings:
+         patch("leakharvester.adapters.clickhouse.SettingsManager") as MockSM:
         
         mock_client_instance = MagicMock()
         mock_get_client.return_value = mock_client_instance
         
-        mock_settings.INSTANCE_ID = None
+        mock_sm_instance = MockSM.return_value
+        mock_sm_instance.get_instance_id.return_value = None
         
         adapter = ClickHouseAdapter()
         
