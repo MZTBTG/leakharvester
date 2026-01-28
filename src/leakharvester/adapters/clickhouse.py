@@ -2,8 +2,6 @@ import threading
 from typing import TYPE_CHECKING, List, Tuple
 from leakharvester.ports.repository import BreachRepository
 from leakharvester.config import settings
-from leakharvester.domain.exceptions import EnvironmentMismatchError
-from leakharvester.settings_manager import SettingsManager
 
 if TYPE_CHECKING:
     import clickhouse_connect
@@ -29,7 +27,7 @@ class ClickHouseAdapter(BreachRepository):
     def client(self) -> "Client":
         if not hasattr(self._thread_local, 'client'):
             import clickhouse_connect
-            client = clickhouse_connect.get_client(
+            self._thread_local.client = clickhouse_connect.get_client(
                 host=self.host,
                 port=self.port,
                 username=self.username,
@@ -37,37 +35,6 @@ class ClickHouseAdapter(BreachRepository):
                 database=self.database,
                 settings=self.settings
             )
-            
-            # Safe Fail: Instance ID Verification
-            sm = SettingsManager()
-            local_id = sm.get_instance_id()
-            
-            if local_id:
-                try:
-                    result = client.query("SELECT value FROM vault.system_info WHERE key = 'instance_id'")
-                    server_id = result.result_rows[0][0] if result.result_rows else None
-                    
-                    if server_id != local_id:
-                        client.close()
-                        raise EnvironmentMismatchError(
-                            f"Environment Mismatch! Local ID: {local_id}, Server ID: {server_id}. "
-                            "You may be connecting to the wrong database volume."
-                        )
-                except Exception as e:
-                    # If table doesn't exist or query fails, and we expect an ID, treat as mismatch or unsafe.
-                    # Only ignoring if it's the mismatch error itself being re-raised
-                    if isinstance(e, EnvironmentMismatchError):
-                        raise e
-                    
-                    # If the table is missing, it's an old DB or uninitialized one.
-                    # Since we have a Local ID, we expect the DB to have one.
-                    client.close()
-                    raise EnvironmentMismatchError(
-                        f"Environment Mismatch! Local ID is {local_id} but could not verify Server ID. "
-                        f"Error: {e}"
-                    )
-
-            self._thread_local.client = client
         return self._thread_local.client
 
     def insert_arrow_batch(self, table: "pa.Table", table_name: str) -> None:

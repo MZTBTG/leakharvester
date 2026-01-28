@@ -13,7 +13,3 @@ class IngestionError(LeakHarvesterError):
 class StorageError(LeakHarvesterError):
     """Raised when an error occurs during storage operations."""
     pass
-
-class EnvironmentMismatchError(LeakHarvesterError):
-    """Raised when the connected database instance ID does not match the configured instance ID."""
-    pass
