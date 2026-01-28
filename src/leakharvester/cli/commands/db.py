@@ -12,8 +12,9 @@ import os
 import shutil
 import subprocess
 import time
+import uuid
 
-def ensure_db_running():
+def ensure_db_running(force_restart: bool = False):
     host = settings.CLICKHOUSE_HOST or "localhost"
     port = settings.CLICKHOUSE_PORT or 8123
     ping_url = f"http://{host}:{port}/ping"
@@ -25,10 +26,11 @@ def ensure_db_running():
         except Exception:
             return False
 
-    if is_online():
+    if not force_restart and is_online():
         return
 
-    log_warning("Database unreachable. Checking for Docker environment...")
+    if force_restart:
+        log_warning("Forcing database restart to apply configuration changes...")
 
     sm = SettingsManager()
     active_path = sm.get_active_db_path()
@@ -59,9 +61,19 @@ def ensure_db_running():
         log_warning("No docker-compose.yml found. Cannot auto-start database.")
         return
 
+    if force_restart:
+        log_info("Stopping existing container...")
+        subprocess.run(docker_cmd + ["down"], check=False, env=env)
+
     log_info(f"Starting ClickHouse via Docker (Volume: {env['DB_VOLUME_PATH']})...")
+    
+    up_args = ["up", "-d"]
+    if force_restart:
+        up_args.append("--force-recreate")
+    up_args.append("clickhouse")
+
     try:
-        subprocess.run(docker_cmd + ["up", "-d", "clickhouse"], check=True, env=env, capture_output=True, text=True)
+        subprocess.run(docker_cmd + up_args, check=True, env=env, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
         err_msg = e.stderr.lower()
         if "permission denied" in err_msg and "docker.sock" in err_msg:
@@ -103,6 +115,13 @@ SETTINGS
     max_bytes_to_merge_at_min_space_in_pool = 10485760,
     min_bytes_for_wide_part = 10485760,
     old_parts_lifetime = 60;
+
+CREATE TABLE IF NOT EXISTS vault.system_info
+(
+    `key` String,
+    `value` String
+)
+ENGINE = TinyLog;
 """
 
 def db_command(
@@ -137,7 +156,7 @@ def db_command(
                 path.mkdir(parents=True, exist_ok=True)
                 sm.set_active_db_path(path)
                 log_success(f"Created and set active path: {path.resolve()}")
-        return
+        # allow chaining to other commands like --init
 
     if status:
         active_path = sm.get_active_db_path()
@@ -267,7 +286,7 @@ def db_command(
         return
 
     if init:
-        ensure_db_running()
+        ensure_db_running(force_restart=True)
         try:
             settings.create_dirs()
             repo = ClickHouseAdapter()
@@ -276,6 +295,14 @@ def db_command(
             for statement in statements:
                 if statement.strip():
                     repo.execute_ddl(statement)
+            
+            # Generate and Store Instance ID
+            instance_id = str(uuid.uuid4())
+            sm.set_instance_id(instance_id)
+            log_info(f"Generated Instance ID: {instance_id}")
+            
+            # Store ID in DB
+            repo.client.command("INSERT INTO vault.system_info (key, value) VALUES", [('instance_id', instance_id)])
             
             log_success(f"Database initialized at {sm.get_active_db_path() or 'default location'}.")
         except Exception as e:
