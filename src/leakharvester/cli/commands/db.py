@@ -156,7 +156,7 @@ def db_command(
                 path.mkdir(parents=True, exist_ok=True)
                 sm.set_active_db_path(path)
                 log_success(f"Created and set active path: {path.resolve()}")
-        return
+        # allow chaining to other commands like --init
 
     if status:
         active_path = sm.get_active_db_path()
