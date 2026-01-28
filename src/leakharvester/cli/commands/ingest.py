@@ -57,7 +57,6 @@ def ingest_command(
             append=append
         )
     else:
-        # Default behavior: ingest from configured RAW directory
         files = list(settings.RAW_DIR.glob("*"))
         if not files:
             log_info("No files found in raw directory.")

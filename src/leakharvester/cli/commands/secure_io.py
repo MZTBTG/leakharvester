@@ -44,12 +44,8 @@ def export_command(
         with repo.client.query_arrow_stream(query) as stream:
              log_info(f"Streaming data to {output} (Encrypted: {not no_pass}, ZSTD: {compression_level})...")
 
-             # Defensive: some clients return a RecordBatchReader with `.schema`,
-             # others return a generator/iterator of RecordBatches (no `.schema`).
              schema = getattr(stream, "schema", None)
              if schema is None:
-                 # Attempt to pull the first RecordBatch to determine schema,
-                 # then chain it back with the original iterator so no data is lost.
                  try:
                      first_batch = next(stream)
                  except StopIteration:

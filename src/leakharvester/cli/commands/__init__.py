@@ -1,3 +1,0 @@
-"""
-LeakHarvester CLI commands package.
-"""

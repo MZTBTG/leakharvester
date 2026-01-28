@@ -136,7 +136,6 @@ def db_command(
 ):
     """
     Database Lifecycle Management.
-    Initialize, manage, and monitor the LeakHarvester database instance.
     """
     sm = SettingsManager()
     console = Console()
@@ -160,7 +159,6 @@ def db_command(
                 path.mkdir(parents=True, exist_ok=True)
                 sm.set_active_db_path(path)
                 log_success(f"Created and set active path: {path.resolve()}")
-        # allow chaining to other commands like --init
 
     if status:
         active_path = sm.get_active_db_path()
@@ -300,12 +298,10 @@ def db_command(
                 if statement.strip():
                     repo.execute_ddl(statement)
             
-            # Generate and Store Instance ID
             instance_id = str(uuid.uuid4())
             sm.set_instance_id(instance_id)
             log_info(f"Generated Instance ID: {instance_id}")
             
-            # Store ID in DB
             repo.client.insert("vault.system_info", [[ 'instance_id', instance_id ]], column_names=['key', 'value'])
             
             log_success(f"Database initialized at {sm.get_active_db_path() or 'default location'}.")

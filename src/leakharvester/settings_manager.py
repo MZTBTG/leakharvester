@@ -44,7 +44,7 @@ class SettingsManager:
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(json.dumps(settings, indent=2), encoding="utf-8")
-            self._settings = settings # Update in-memory
+            self._settings = settings
         except Exception as e:
             log_error(f"Failed to save settings to {target}: {e}")
 

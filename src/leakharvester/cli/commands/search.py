@@ -11,27 +11,21 @@ from leakharvester.adapters.console import log_info, log_error, log_warning, log
 from leakharvester.adapters.clickhouse import ClickHouseAdapter
 
 def search_command(
-    query: str = typer.Argument(None, help="Search term (e.g. 'augusto.bachini', 'password123')"),
+    query: str = typer.Argument(None, help="Search term (e.g. 'vishmaria@example.com', 'password123')"),
     limit: int = typer.Option(20, "-l", "--limit", help="Max results to display (0 for unlimited)."),
     column: str = typer.Option(None, "-c", "--column", help="Target specific columns (comma-separated)."),
-    
-    # Advanced Filtering
-    exact: bool = typer.Option(False, "-e", "--exact", help="Exact match (Defaults to case-insensitive unless -C is used)."),
+    exact: bool = typer.Option(False, "-e", "--exact", help="Exact full-string match (case-insensitive unless -C is used)."),
     case: bool = typer.Option(False, "-C", "--case", help="Case sensitive matching."),
     string_mode: bool = typer.Option(False, "-s", "--string", help="Force Full Table Scan (Ignore Indexes)."),
-    
-    # Presentation
-    full: bool = typer.Option(False, "--full", help="Disable smart suppression (Show all columns including empty/dates)."),
+    full: bool = typer.Option(False, "--full", help="Disable empty and unnecessary column suppression (Show all columns including empty)."),
     print_columns: str = typer.Option(None, "-p", "--print-column", help="Columns to display in output (comma-separated)."),
-    
-    # I/O
     quiet: bool = typer.Option(False, "-q", "--quiet", help="Quiet mode (Data only, no banners)."),
     csv_sep: str = typer.Option(None, "--csv", help="Output to CSV with separator (e.g. ',')."),
     output: Path = typer.Option(None, "-o", "--output", help="Save pretty output to file."),
     output_csv: Path = typer.Option(None, "--o-csv", help="Save CSV output to file (respects --csv separator)."),
 ):
     """
-    Searches the breach database with advanced filtering and flexible output.
+    Searches the breach database with advanced filters.
     
     [bold]Search Modes:[/bold]
     Default: [cyan]ILIKE '%term%'[/cyan] (Fuzzy, Case-Insensitive)
@@ -42,14 +36,12 @@ def search_command(
     console = Console(quiet=quiet)
     repo = ClickHouseAdapter()
     
-    # 1. Column Introspection
     try:
         all_cols = repo.get_columns("vault.breach_records")
     except Exception as e:
         log_error(f"Failed to fetch table schema: {e}")
         return
 
-    # Helper to list columns and exit
     def list_cols_and_exit():
         schema_text = ", ".join([f"[green]{c}[/green]" for c in all_cols])
         schema_panel = Panel(
@@ -61,15 +53,9 @@ def search_command(
         console.print(schema_panel)
         raise typer.Exit()
 
-    # Handle explicit column listing request via empty -p (Typer restriction workaround logic if needed)
-    # If no query and no explicit listing, but user asked for search help... Typer handles --help.
-    # If user provided -c but invalid, we list columns.
     
     if not query:
-        # If no query provided, assume they want to see what's available
         list_cols_and_exit()
-
-    # 2. Target Columns Logic
     search_cols = []
     if column:
         requested = [c.strip() for c in column.split(",")]
@@ -79,16 +65,11 @@ def search_command(
             list_cols_and_exit()
         search_cols = requested
     else:
-        # Default: Search String-like columns, skip dates/metadata if not --full (but search needs to hit text)
         search_cols = [c for c in all_cols if c not in ('breach_date', 'import_date', 'source_file')]
         if not quiet:
             log_info(f"Searching in default columns: {', '.join(search_cols)}")
-
-    # 3. SQL Construction
     conditions = []
     
-    # Sanitize query to prevent basic injection if not using parameters (ClickHouse Python driver handles params but we build dynamic SQL)
-    # Ideally use parameters, but dynamic column ORs are tricky. We will escape single quotes.
     safe_query = query.replace("'", "\'") 
     
     for col in search_cols:
@@ -99,16 +80,12 @@ def search_command(
         elif not exact and case:
             conditions.append(f"{col} LIKE '%{safe_query}%'")
         else:
-            # Default
             conditions.append(f"{col} ILIKE '%{safe_query}%'")
             
     where_clause = " OR ".join(conditions)
     
-    # Settings
     settings_clause = ""
     if string_mode:
-        # Force ignore data skipping indices (Bloom Filters)
-        # Fix: ClickHouse 24.3 does not support wildcard '*', we must list indices explicitly.
         try:
             indices = repo.get_indices("vault.breach_records")
             idx_names = [i[0] for i in indices]
@@ -119,7 +96,6 @@ def search_command(
             if not quiet:
                 log_warning(f"Failed to fetch indices for ignore list: {e}")
 
-    # Limit Logic (0 = Unlimited)
     limit_clause = f"LIMIT {limit}" if limit > 0 else ""
     
     sql = f"""
@@ -136,13 +112,8 @@ def search_command(
         idx_str = " (Full Scan)" if string_mode else ""
         log_info(f"Executing {mode_str}/{case_str} Search: [bold]{query}[/bold] on {len(search_cols)} columns{idx_str}")
         
-        # Check for Index Coverage (Warning) if not string mode
         if not string_mode:
             try:
-                # We need to re-fetch indices here if we didn't already for string_mode logic, 
-                # but effectively get_indices is cheap enough or cached.
-                # However, logic structure suggests we might want to deduplicate calls if optimized, 
-                # but keeping it robust for now.
                 indices = repo.get_indices("vault.breach_records")
                 optimized_cols = set()
                 for idx in indices:
@@ -172,7 +143,6 @@ def search_command(
     start_time = time.time()
     
     try:
-        # We use select * so columns are all_cols
         result = repo.client.query(sql)
         elapsed = time.time() - start_time
         rows = result.result_rows
@@ -182,23 +152,15 @@ def search_command(
             if not quiet:
                 console.print(f"[yellow]No results found for '{query}'.[/yellow] (Time: {elapsed:.2f}s)")
             return
-            
-        # 4. Smart Suppression & Column Filtering
-        
-        # Determine cols to display
+
         display_cols = cols
         if print_columns:
             requested_disp = [c.strip() for c in print_columns.split(",")]
-            # Validate
             invalid_disp = [c for c in requested_disp if c not in cols]
             if invalid_disp:
                 log_error(f"Invalid columns for output: {invalid_disp}")
                 list_cols_and_exit()
             display_cols = requested_disp
-        
-        # Logic: If --full is OFF, filter out:
-        # 1. 'breach_date' (Explicit suppression)
-        # 2. Columns that are entirely None/Empty in this result set
         
         final_cols = []
         final_indices = []
@@ -210,7 +172,6 @@ def search_command(
             if not full:
                 if col_name == 'breach_date':
                     continue
-                # Check for emptiness
                 is_empty = True
                 for row in rows:
                     val = row[i]
@@ -228,15 +189,11 @@ def search_command(
                 console.print("[yellow]Results found but all columns suppressed (Try --full).[/yellow]")
             return
 
-        # Transform Rows
         final_rows = []
         for row in rows:
             new_row = [row[i] for i in final_indices]
             final_rows.append(new_row)
 
-        # 5. Output Handling
-        
-        # CSV Generation
         csv_buffer = io.StringIO()
         sep = csv_sep if csv_sep else ","
         writer = csv.writer(csv_buffer, delimiter=sep)
@@ -244,18 +201,15 @@ def search_command(
         writer.writerows(final_rows)
         csv_output = csv_buffer.getvalue()
         
-        # Case A: CSV to Stdout
         if csv_sep and not output_csv:
             print(csv_output, end="")
             return
 
-        # Case B: CSV to File
         if output_csv:
             output_csv.write_text(csv_output, encoding="utf-8")
             if not quiet:
                 log_success(f"CSV saved to {output_csv}")
 
-        # Case C: Pretty Table to Stdout (Default) OR File
         if not csv_sep:
             table = Table(title=f"Search Results ({len(rows)}) - {elapsed:.2f}s" if not quiet else None)
             for col in final_cols:
@@ -271,7 +225,7 @@ def search_command(
                     console_file.print(table)
                 if not quiet:
                     log_success(f"Results saved to {output}")
-            elif not output_csv: # Only print if not saving CSV exclusive
+            elif not output_csv:
                 console.print(table)
         
     except Exception as e:

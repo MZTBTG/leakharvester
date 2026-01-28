@@ -55,7 +55,6 @@ def info_command(
     idx_table.add_column("Size", justify="right")
     
     for idx in indices:
-        # Tuple is now (name, type, expr, granularity, size)
         size_str = idx[4] if len(idx) > 4 else "N/A"
         idx_table.add_row(idx[0], idx[1], str(idx[3]), size_str)
         
