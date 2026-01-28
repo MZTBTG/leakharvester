@@ -134,6 +134,10 @@ def db_command(
     remove: bool = typer.Option(False, "--remove", "-r", help="Remove the active database data (Stop & Delete)."),
     reset_all: bool = typer.Option(False, "--reset-all", help="FACTORY RESET: Wipes Config, Data, and Docker containers.")
 ):
+    """
+    Database Lifecycle Management.
+    Initialize, manage, and monitor the LeakHarvester database instance.
+    """
     sm = SettingsManager()
     console = Console()
 
