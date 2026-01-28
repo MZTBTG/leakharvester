@@ -104,7 +104,7 @@ class BreachIngestor:
         """
         try:
             with open(path, "r", encoding="utf-8") as f:
-                f.read(4096)
+                f.read(8192)
             return "utf-8"
         except UnicodeDecodeError:
             return "latin-1"
@@ -214,7 +214,7 @@ class BreachIngestor:
         num_workers: int = 1,
         append: bool = False
     ) -> None:
-        log_info(f"Iniciando processamento de: {input_path} [Format: {format}, NoCheck: {no_check}, Workers: {num_workers}, Append: {append}]")
+        log_info(f"Starting processing of: {input_path} [Format: {format}, NoCheck: {no_check}, Workers: {num_workers}, Append: {append}]")
         
         target_table = "vault.breach_records"
         source_label = custom_source_name or input_path.name
@@ -228,13 +228,11 @@ class BreachIngestor:
             self.repository.create_staging_table(staging_table, target_table)
             ingest_table = staging_table
 
-        # Initialize concurrency primitives early to satisfy finally block
         upload_queue = queue.Queue(maxsize=num_workers * 2)
         stop_event = threading.Event()
         workers = []
 
         try:
-            # 1. Configuration
             config = {}
             if format != "auto":
                 delimiter, cols = self._parse_format_string(format)
@@ -248,17 +246,13 @@ class BreachIngestor:
             else:
                 config = self._analyze_and_suggest_format(input_path)
                 
-                # Check for ambiguity
                 cols = config.get("columns", [])
                 log_info(f"Detected Config: {config}")
                 has_essentials = "email" in cols and "password" in cols
                 
-                # We proceed if we found essential cols, even if there are extras (which will be ignored/dropped if unknown)
-                # We only abort if we lack essentials AND have ambiguity (unknowns or complex structure)
                 is_ambiguous = not cols or ("unknown" in cols and not has_essentials) or (len(cols) > 2 and not has_essentials)
 
                 if is_ambiguous:
-                    # Ambiguous - Suggest and Abort
                     console = Console()
                     fmt_hint = config.get("separator", ":").join(cols)
                     
@@ -284,7 +278,6 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                     if staging_table and not append: self.repository.drop_table(staging_table)
                     return
 
-            # 2. Setup Workers
             error_container = []
 
             for _ in range(num_workers):
@@ -296,7 +289,6 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                 t.start()
                 workers.append(t)
 
-            # 3. Native Parsing Loop
             chunk_idx = 0
             
             try:
@@ -310,7 +302,7 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                                             ignore_errors=True,
                                             truncate_ragged_lines=True,
                                             low_memory=True,
-                                            encoding="utf8-lossy", # Always use lossy for robustness
+                                            encoding="utf8-lossy",
                                             infer_schema_length=1000
                                         )
                 while True:
@@ -324,7 +316,6 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                     df = batches[0]
                     chunk_idx += 1
                     
-                    # 4. Column Mapping
                     detected_cols = config.get("columns", [])
                     current_cols = df.columns
                     rename_ops = {}
@@ -339,7 +330,6 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                     if rename_ops:
                         df = df.rename(rename_ops)
 
-                    # 5. Validation
                     if "email" in df.columns:
                         df = df.filter(pl.col("email").is_not_null() & (pl.col("email") != ""))
                         
@@ -358,14 +348,12 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                     if df.height == 0:
                         continue
 
-                    # 6. Metadata
                     df = df.with_columns([
                         pl.lit(source_label).alias("source_file"),
                         pl.lit(None).cast(pl.Date).alias("breach_date"),
                         pl.lit(None).cast(pl.Datetime).alias("import_date")
                     ])
 
-                    # 7. Schema Alignment
                     target_cols = CANONICAL_SCHEMA.names()
                     current_set = set(df.columns)
                     missing_exprs = []
@@ -402,7 +390,7 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                 if error_container:
                     raise error_container[0]
 
-                log_success(f"Ingestão concluída. Total chunks: {chunk_idx}")
+                log_success(f"Ingestion completed. Total chunks: {chunk_idx}")
                 
                 if not append:
                     self._finalize_partition_swap(target_table, staging_table, source_label)
@@ -412,12 +400,12 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                 raise e
 
         except KeyboardInterrupt:
-            log_warning("Ingestão interrompida pelo usuário.")
+            log_warning("Ingestion interrupted by user.")
             stop_event.set()
             if staging_table: self.repository.drop_table(staging_table)
             raise
         except Exception as e:
-            log_error(f"Erro durante processamento de {input_path}: {e}")
+            log_error(f"Error during processing of {input_path}: {e}")
             self._move_to_quarantine(input_path, quarantine_dir)
             stop_event.set()
             if staging_table: self.repository.drop_table(staging_table)
@@ -448,8 +436,6 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
         total_rows = 0
         start_time = time.time()
         
-        # Stream ingestion requires simpler logic as we can't sniff effectively easily
-        # Fallback to defaults or provided format
         delimiter, columns = self._parse_format_string(format)
         if not self._validate_and_sync_schema(columns):
             if staging_table: self.repository.drop_table(staging_table)
@@ -469,7 +455,7 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
             t.start()
             workers.append(t)
         
-        log_info(f"Iniciando ingestão via Stream ({source_name}) [Format: {format}] [Delim: '{delimiter}'] [Cols: {columns}] [Append: {append}]")
+        log_info(f"Starting ingestion via Stream ({source_name}) [Format: {format}] [Delim: '{delimiter}'] [Cols: {columns}] [Append: {append}]")
         
         try:
             import polars as pl
@@ -482,7 +468,7 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                 
                 if chunk_idx % 10 == 0:
                      elapsed = time.time() - start_time
-                     log_info(f"Processando chunk {chunk_idx} ({total_rows} linhas)... {elapsed:.2f}s")
+                     log_info(f"Processing chunk {chunk_idx} ({total_rows} lines)... {elapsed:.2f}s")
                 
                 num_cols = len(columns)
                 df = df.with_columns(
@@ -554,18 +540,18 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                 raise error_container[0]
             
             total_time = time.time() - start_time
-            log_success(f"Ingestão via Stream concluída. Total chunks: {chunk_idx} | Linhas: {total_rows} | Tempo: {total_time:.2f}s")
+            log_success(f"Stream ingestion completed. Total chunks: {chunk_idx} | Lines: {total_rows} | Time: {total_time:.2f}s")
             
             if not append:
                 self._finalize_partition_swap(target_table, staging_table, source_name)
 
         except KeyboardInterrupt:
-            log_warning("Ingestão interrompida pelo usuário.")
+            log_warning("Ingestion interrupted by user.")
             stop_event.set()
             if staging_table: self.repository.drop_table(staging_table)
             raise
         except Exception as e:
-            log_error(f"Erro durante ingestão de stream: {e}")
+            log_error(f"Error during stream ingestion: {e}")
             stop_event.set()
             if staging_table: self.repository.drop_table(staging_table)
         finally:
@@ -664,9 +650,9 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
         try:
             dest = quarantine_dir / file_path.name
             self.file_storage.move_file(file_path, dest)
-            log_warning(f"Arquivo movido para quarentena: {dest}")
+            log_warning(f"File moved to quarantine: {dest}")
         except Exception as e:
-            log_error(f"Falha ao mover para quarentena: {e}")
+            log_error(f"Failed to move to quarantine: {e}")
 
     def repair_quarantine(self, quarantine_dir: Path, staging_dir: Path) -> None:
         """
@@ -674,10 +660,10 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
         """
         files = list(quarantine_dir.glob("*.parquet"))
         if not files:
-            log_info("Nenhum arquivo encontrado na quarentena.")
+            log_info("No files found in quarantine.")
             return
             
-        log_info(f"Iniciando reparo de {len(files)} arquivos em quarentena...")
+        log_info(f"Starting repair of {len(files)} files in quarantine...")
         
         email_pattern = r"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})"
         total_recovered = 0
@@ -690,12 +676,10 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                     q_file.unlink()
                     continue
                 
-                # Apply Heavy Regex Extraction
                 df = df.with_columns(
                     pl.col("raw_line").str.extract(email_pattern, 1).alias("email")
                 )
                 
-                # Filter Valid
                 valid_df = df.filter(pl.col("email").is_not_null())
                 
                 if valid_df.height > 0:
@@ -713,11 +697,11 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                     self.repository.insert_arrow_batch(table, "breach_records")
                     
                     total_recovered += valid_df.height
-                    log_info(f"Recuperado {valid_df.height} linhas de {q_file.name}")
+                    log_info(f"Recovered {valid_df.height} lines from {q_file.name}")
                 
                 q_file.unlink()
                 
             except Exception as e:
-                log_error(f"Erro ao reparar {q_file}: {e}")
+                log_error(f"Error repairing {q_file}: {e}")
         
-        log_success(f"Reparo concluído. Total recuperado: {total_recovered} registros.")
+        log_success(f"Repair completed. Total recovered: {total_recovered} records.")

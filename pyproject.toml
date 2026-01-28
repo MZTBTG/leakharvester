@@ -1,18 +1,18 @@
 [project]
 name = "leakharvester"
-version = "0.1.0"
-description = "Motor de ingestão e análise de dados de vazamentos de alta performance."
+version = "1.0.0"
+description = "High-performance breach data ingestion and analysis engine."
 requires-python = ">=3.12"
 dependencies = [
-    "clickhouse-connect>=0.9.0", # Driver verificado (v0.9.2 latest)
-    "polars[all]>=1.36.0",       # Motor DataFrame verificado (v1.36.1 latest)
-    "typer>=0.12.0",             # CLI
-    "rich>=13.7.0",              # UI
-    "pydantic-settings>=2.2.0",  # Config
-    "pyarrow>=17.0.0",           # Backend Arrow
-    "orjson>=3.10.0",            # JSON Fast
-    "pynacl>=1.5.0",             # Crypto (Argon2id + XChaCha20)
-    "zstandard>=0.22.0",         # Compression
+    "clickhouse-connect>=0.9.0",
+    "polars[all]>=1.36.0",
+    "typer>=0.12.0",
+    "rich>=13.7.0",
+    "pydantic-settings>=2.2.0",
+    "pyarrow>=17.0.0",
+    "orjson>=3.10.0",
+    "pynacl>=1.5.0",
+    "zstandard>=0.22.0",
 ]
 
 [dependency-groups]
@@ -21,6 +21,7 @@ dev = [
     "ruff>=0.6.0",
     "pytest>=8.3.0",
     "pytest-sugar>=1.0.0",
+    "pytest-cov>=7.0.0",
 ]
 
 [tool.ruff]
@@ -40,3 +41,7 @@ disallow_untyped_defs = true
 [tool.pytest.ini_options]
 addopts = "-ra -q --strict-markers"
 testpaths = ["tests"]
+
+[project.scripts]
+leakharvester = "leakharvester.cli.main:app"
+lhs = "leakharvester.cli.main:lhs_entry"

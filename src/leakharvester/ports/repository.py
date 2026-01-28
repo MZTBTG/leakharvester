@@ -1,4 +1,4 @@
-from typing import Protocol, Any
+from typing import Protocol
 import pyarrow as pa
 
 class BreachRepository(Protocol):

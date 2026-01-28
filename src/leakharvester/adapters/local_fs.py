@@ -10,15 +10,13 @@ from leakharvester.domain.schemas import RAW_CSV_SCHEMA
 
 class LocalFileSystemAdapter(FileStorage):
     def scan_csv(self, path: Path) -> pl.LazyFrame:
-        # Simple sniffer to detect separator
         sep = ","
         quote = '"'
         has_header = True
         
-        # If extension is .txt or looks like raw dump, read as lines
         if path.suffix in [".txt", ""] or "part" in path.name:
-            sep = "\x1F" # Unit Separator (unlikely to exist)
-            quote = "\x00" # Disable quoting
+            sep = "\x1F"
+            quote = "\x00"
             has_header = False
         else:
             try:
@@ -26,10 +24,9 @@ class LocalFileSystemAdapter(FileStorage):
                     first_line = f.readline()
                     if ":" in first_line and "," not in first_line:
                         sep = ":"
-                        quote = "\x00" # Often dumps use : without quotes
+                        quote = "\x00"
                     elif ";" in first_line and "," not in first_line:
                         sep = ";"
-                    # else default
             except Exception:
                 pass
 
@@ -39,14 +36,13 @@ class LocalFileSystemAdapter(FileStorage):
             quote_char=quote,
             has_header=has_header,
             ignore_errors=True,
-            truncate_ragged_lines=True, # Critical for mixed dumps
+            truncate_ragged_lines=True,
             infer_schema_length=10000,
             low_memory=True,
             new_columns=["raw_line"] if not has_header and sep == "\x1F" else None
         )
     
     def write_parquet(self, lazy_df: pl.LazyFrame, output_path: Path) -> None:
-        # sink_parquet executes the lazy graph
         lazy_df.sink_parquet(output_path, compression="zstd")
 
     def read_parquet_batches(self, path: Path, batch_size: int = 500_000) -> Any:
@@ -56,14 +52,13 @@ class LocalFileSystemAdapter(FileStorage):
             yield batch
 
     def read_lines_batched(self, path: Path, batch_size: int = 100_000) -> Any:
-        # Optimized reader using Polars Rust engine
         try:
             reader = pl.read_csv_batched(
                 path,
-                separator="\x1F", # Unit Separator (Fake)
+                separator="\x1F",
                 has_header=False,
                 new_columns=["raw_line"],
-                batch_size=batch_size, # Request large batches
+                batch_size=batch_size,
                 quote_char="\x00",
                 ignore_errors=True,
                 truncate_ragged_lines=True,
@@ -71,12 +66,10 @@ class LocalFileSystemAdapter(FileStorage):
                 low_memory=True
             )
             
-            # Accumulator for true batch size
             accumulated_dfs = []
             current_rows = 0
 
             while True:
-                # Request a batch. Polars might return a list of smaller DFs.
                 batches = reader.next_batches(1) 
                 if not batches:
                     break
@@ -85,18 +78,15 @@ class LocalFileSystemAdapter(FileStorage):
                     accumulated_dfs.append(df)
                     current_rows += df.height
                 
-                # If we have enough rows, yield a concatenated large batch
                 if current_rows >= batch_size:
                     yield pl.concat(accumulated_dfs)
                     accumulated_dfs = []
                     current_rows = 0
             
-            # Yield remaining
             if accumulated_dfs:
                 yield pl.concat(accumulated_dfs)
 
         except Exception:
-             # Fallback (unchanged)
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
                 batch = []
                 for line in f:
@@ -108,52 +98,37 @@ class LocalFileSystemAdapter(FileStorage):
                     yield batch
 
     def read_stream_batched(self, stream: Any, batch_size: int = 100_000) -> Any:
-        # Optimized "Buffered Parallel" strategy
-        # Instead of feeding the stream directly (which forces sequential read),
-        # we buffer a large chunk of bytes into RAM (BytesIO) and feed it to pl.read_csv.
-        # This tricks Polars into treating it as a "file", enabling multi-threaded parsing.
-        
-        # Estimate bytes per row to calculate target buffer size
-        # Assume 100 bytes per row (conservative for leaks)
         target_bytes = batch_size * 100 
         
-        # Use a Queue to decouple Reading (I/O) from Parsing (CPU)
         chunk_queue = queue.Queue(maxsize=3)
         
         def _reader_thread(r_stream, q, t_bytes):
             try:
                 while True:
-                    # Blocking Read
                     chunk = r_stream.read(t_bytes)
                     if not chunk:
-                        q.put(None) # Sentinel
+                        q.put(None)
                         break
                     
-                    # Read until newline to ensure complete rows
                     remainder = r_stream.readline()
                     if remainder:
                         chunk += remainder
                     
-                    # Put to queue (blocks if full)
                     q.put(chunk)
             except Exception:
                 q.put(None)
 
         try:
-            # If stream has a 'buffer' attribute (like sys.stdin), use it for raw byte access
             raw_stream = getattr(stream, 'buffer', stream)
             
-            # Start Reader Thread
             t = threading.Thread(target=_reader_thread, args=(raw_stream, chunk_queue, target_bytes), daemon=True)
             t.start()
             
             while True:
-                # Retrieve from Queue (blocks if empty)
                 chunk = chunk_queue.get()
                 if chunk is None:
                     break
                 
-                # Wrap in BytesIO to make it seekable for Polars
                 buffer = io.BytesIO(chunk)
                 
                 try:
@@ -166,8 +141,8 @@ class LocalFileSystemAdapter(FileStorage):
                         ignore_errors=True,
                         truncate_ragged_lines=True,
                         encoding="utf8-lossy",
-                        low_memory=True, # Critical to avoid RAM spike during parse
-                        n_threads=None # Use all available threads
+                        low_memory=True,
+                        n_threads=None
                     )
                     
                     yield df
@@ -175,12 +150,10 @@ class LocalFileSystemAdapter(FileStorage):
                 except pl.exceptions.NoDataError:
                     pass
                 finally:
-                    # Cleanup logic
                     del chunk
                     del buffer
                 
         except Exception:
-            # Fallback to line-by-line if binary read fails
             batch = []
             try:
                 for line in stream:

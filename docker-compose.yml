@@ -3,8 +3,8 @@ services:
     image: clickhouse/clickhouse-server:24.3
     container_name: leakharvester_db
     ports:
-      - "8123:8123" # HTTP
-      - "9000:9000" # Native
+      - "8123:8123"
+      - "9000:9000"
     ulimits:
       nofile:
         soft: 262144
@@ -12,6 +12,7 @@ services:
     volumes:
       - ${DB_VOLUME_PATH:-./data/clickhouse_data}:/var/lib/clickhouse
       - ./data/clickhouse_logs:/var/log/clickhouse-server
+      - ./data/clickhouse_config/tune_logging.xml:/etc/clickhouse-server/config.d/tune_logging.xml
     environment:
       - CLICKHOUSE_DB=vault
       - CLICKHOUSE_USER=leakharvester

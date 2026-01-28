@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from dataclasses import dataclass
 from rich.console import Console
 from rich.table import Table
@@ -21,9 +21,7 @@ class HeuristicAnalyzer:
         """
         Analyzes a column's statistical properties to recommend an index strategy.
         """
-        # 1. Fetch Stats
         try:
-            # Check basic type first
             cols = self.repo.get_columns_with_types(table)
             col_type = next((t for c, t in cols if c == column), None)
             
@@ -33,9 +31,6 @@ class HeuristicAnalyzer:
             if "String" not in col_type and "FixedString" not in col_type:
                 return IndexRecommendation("NONE", 1.0, f"Type {col_type} usually needs no text index", "")
 
-            # 2. Heuristic Analysis via SQL (Faster than fetching rows)
-            # We calculate entropy proxies: uniq (cardinality), avg_len
-            
             sample_clause = f"LIMIT {sample_size}"
             if random_sample:
                 sample_clause = f"ORDER BY rand() {sample_clause}"
@@ -55,19 +50,11 @@ class HeuristicAnalyzer:
             total_rows = res[2]
             avg_non_alnum = res[3] / total_rows if total_rows > 0 else 0
 
-            # 3. Decision Matrix
-            
-            # Ratio of unique values to total sample
             uniqueness_ratio = cardinality / total_rows if total_rows > 0 else 0
             
-            # CASE A: Low Cardinality (Enum-like)
             if uniqueness_ratio < 0.1 and cardinality < 1000:
-                # ClickHouse implies low cardinality strings are fast without index, 
-                # or use Set Bloom Filter (not requested in prompt options, so NONE)
                 return IndexRecommendation("NONE", 0.8, "Low Cardinality (Scan is fast)", "")
 
-            # CASE B: Long Text / Natural Language -> Inverted
-            # "High Cardinality + Long Text"
             if avg_len > 20:
                 return IndexRecommendation(
                     "INVERTED", 
@@ -76,14 +63,8 @@ class HeuristicAnalyzer:
                     "TYPE inverted(0) GRANULARITY 1"
                 )
 
-            # CASE C: Short Text / Codes -> TokenBF
-            # "High Cardinality + Short Text"
             if avg_len <= 20 and uniqueness_ratio > 0.5:
-                # Sub-decision: Is it "Tokenizable" (has separators)?
-                # If it has few non-alnum chars (like username 'user123'), it might not tokenize well.
-                # If it's an email 'user@domain.com', it has separators.
-                
-                if avg_non_alnum >= 1: # Has separators like @, ., -
+                if avg_non_alnum >= 1:
                     return IndexRecommendation(
                         "TOKENBF", 
                         0.85, 
@@ -91,8 +72,6 @@ class HeuristicAnalyzer:
                         "TYPE tokenbf_v1(32768, 3, 0) GRANULARITY 1"
                     )
                 else:
-                    # Continuous string (Hash, License Plate, DNA) -> N-Gram
-                    # "Substring Search Likely"
                     return IndexRecommendation(
                         "NGRAMBF", 
                         0.80, 
@@ -100,7 +79,6 @@ class HeuristicAnalyzer:
                         "TYPE ngrambf_v1(4, 32768, 2, 0) GRANULARITY 1"
                     )
 
-            # Default Fallback: Inverted is usually the safest bet for "Search"
             return IndexRecommendation(
                 "INVERTED", 
                 0.6, 
@@ -119,24 +97,18 @@ class IndexManager:
 
     def list_indexes(self) -> List[Dict[str, Any]]:
         raw = self.repo.get_indices(self.table)
-        # raw: [(name, type, expr, granularity, size), ...]
-        
         indexes = []
         for r in raw:
             indexes.append({
                 "name": r[0],
                 "type": r[1],
-                "column": r[2].split(" ")[0] if " " in r[2] else r[2], # Rough parse of expr
+                "column": r[2].split(" ")[0] if " " in r[2] else r[2],
                 "granularity": r[3],
                 "size": r[4] if len(r) > 4 else "N/A"
             })
         return indexes
 
     def drop_index(self, column: str) -> None:
-        # Find index for column.
-        # Naming convention: idx_{column} or idx_{type}_{column}
-        # We'll drop anything that looks related or exact match if user provides index name (but user provides col)
-        
         current = self.list_indexes()
         targets = [idx['name'] for idx in current if column in idx['name'] or idx['column'] == column]
         
@@ -149,22 +121,15 @@ class IndexManager:
             self.repo.client.command(f"ALTER TABLE {self.table} DROP INDEX {idx_name}")
 
     def apply_index(self, column: str, ddl_def: str) -> None:
-        # Check if exists
-        idx_name = f"idx_{column}_{ddl_def.split('(')[0].split(' ')[1].lower()}" # rough name: idx_email_inverted
-        
-        # Simpler name to avoid length issues: idx_{column}
-        # But if we want multiple? No, usually one per col.
+        idx_name = f"idx_{column}_{ddl_def.split('(')[0].split(' ')[1].lower()}"
         idx_name = f"idx_{column}"
         
         log_info(f"Applying Index on {column}: {ddl_def}")
         
-        # Drop existing with same name
         self.repo.client.command(f"ALTER TABLE {self.table} DROP INDEX IF EXISTS {idx_name}")
         
-        # Add
         try:
             self.repo.client.command(f"ALTER TABLE {self.table} ADD INDEX {idx_name} {column} {ddl_def}")
-            # Materialize
             log_info("Materializing index (Background)...")
             self.repo.client.command(f"ALTER TABLE {self.table} MATERIALIZE INDEX {idx_name}")
         except Exception as e:

@@ -11,7 +11,6 @@ if TYPE_CHECKING:
 class ClickHouseAdapter(BreachRepository):
     def __init__(self) -> None:
         self._thread_local = threading.local()
-        # We also keep connection params to re-create clients
         self.host = settings.CLICKHOUSE_HOST
         self.port = settings.CLICKHOUSE_PORT
         self.username = settings.CLICKHOUSE_USER
@@ -38,7 +37,6 @@ class ClickHouseAdapter(BreachRepository):
         return self._thread_local.client
 
     def insert_arrow_batch(self, table: "pa.Table", table_name: str) -> None:
-        # ClickHouse Connect handles PyArrow tables directly
         self.client.insert_arrow(
             table=table_name,
             arrow_table=table
@@ -57,9 +55,6 @@ class ClickHouseAdapter(BreachRepository):
 
     def replace_partition(self, target_table: str, staging_table: str, partition_id: str) -> None:
         """Replaces a partition in the target table with data from the staging table."""
-        # For LowCardinality(String), the partition ID needs to be properly quoted in the SQL
-        # If partition_id is 'filename.txt', it should be treated as a string literal.
-        # ClickHouse syntax: REPLACE PARTITION 'partition_name' ...
         self.client.command(f"ALTER TABLE {target_table} REPLACE PARTITION '{partition_id}' FROM {staging_table}")
 
     def get_columns(self, table_name: str) -> list[str]:
@@ -138,7 +133,6 @@ class ClickHouseAdapter(BreachRepository):
         return [row[0] for row in self.client.query(sql).result_rows]
 
     def close(self) -> None:
-        # Best effort close for current thread
         if hasattr(self._thread_local, 'client'):
             self._thread_local.client.close()
             del self._thread_local.client
