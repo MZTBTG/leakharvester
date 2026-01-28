@@ -54,3 +54,4 @@ data/staging/*
 !data/staging/.gitkeep
 data/quarantine/*
 !data/quarantine/.gitkeep
+docs/
