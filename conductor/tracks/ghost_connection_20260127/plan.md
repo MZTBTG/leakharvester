@@ -9,7 +9,7 @@
     - [x] Sub-task: Update tests to verify `instance_id` persistence and retrieval. [4322c2d]
 - [ ] Task: Conductor - User Manual Verification 'Phase 1' (Protocol in workflow.md)
 
-## Phase 2: Robust DB Initialization (Docker Lifecycle)
+## Phase 2: Robust DB Initialization (Docker Lifecycle) [checkpoint: a318fe6]
 - [x] Task: Refactor `db --init` command to enforce container recreation. [13845e2]
     - [x] Sub-task: Write tests mocking `docker compose` calls to verify the correct sequence: `down` -> `up --force-recreate`. [13845e2]
     - [x] Sub-task: Modify `commands/db.py` to execute `docker compose down` before starting. [13845e2]
