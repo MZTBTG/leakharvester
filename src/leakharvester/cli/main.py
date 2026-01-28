@@ -1,4 +1,5 @@
 import typer
+import sys
 from leakharvester.cli.commands.db import db_command
 from leakharvester.cli.commands.index import index_command
 from leakharvester.cli.commands.search import search_command
@@ -21,6 +22,13 @@ app.command(name="repair")(repair_command)
 app.command(name="info")(info_command)
 app.command(name="export")(export_command)
 app.command(name="import")(import_command)
+
+def lhs_entry():
+    if len(sys.argv) > 1 and sys.argv[1] != "search":
+        sys.argv.insert(1, "search")
+    elif len(sys.argv) == 1:
+        sys.argv.append("search")
+    app()
 
 if __name__ == "__main__":
     app()
