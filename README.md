@@ -2,9 +2,7 @@
 
 **High-Performance Breach Data Ingestion & Search Engine.**
 
-LeakHarvester is a specialized CLI tool designed for security researchers and forensic analysts. It ingests massive, unstructured breach datasets (CSV, Text) into a highly optimized ClickHouse backend, enabling sub-second full-text searches across billions of records.
-
-> **Status:** Production Ready (v1.0.0)
+LeakHarvester is a specialized CLI tool designed for manage huge datasets and perform searches over them, without compromissing your storage space or collecting any kind of data. It ingests massive, unstructured breach datasets (CSV, Text and more on the future) into a highly optimized ClickHouse backend, enabling sub-second full-text searches across billions of records.
 
 ## 🏗 Architecture
 
@@ -13,9 +11,9 @@ LeakHarvester is built on a Hexagonal Architecture (Ports & Adapters) to separat
 *   **Core:** Polars-based streaming ingestion pipeline with heuristic schema normalization.
 *   **Storage:** ClickHouse (via `clickhouse-connect`) using `MergeTree` engines with ZSTD(3) compression and Delta encoding.
 *   **IO Layer:** Apache Arrow IPC streams for high-throughput data transfer.
-*   **Security:** `Argon2id` + `XChaCha20-Poly1305` encryption for portable `.lh` data containers.
+*   **Security:** `Argon2id` + `XChaCha20-Poly1305` encryption for portable `.lh` data containers, easily shareable with anyone with security.
 
-[View Full Architecture Documentation](docs/src/leakharvester/cli/main.md)
+[View Full Architecture Documentation (Soon...)](about:blank)
 
 ## 🚀 Installation
 
@@ -26,48 +24,108 @@ LeakHarvester is built on a Hexagonal Architecture (Ports & Adapters) to separat
 
 ### Setup
 
-1.  **Clone and Sync:**
+1. **Installing and configuring the dependencies:**
+    - **Basic dependencies:**
     ```bash
-    git clone https://github.com/your-org/leakharvester.git
-    cd leakharvester
-    uv sync
+    sudo apt update && \
+    sudo apt install python3-venv git curl apt-transport-https ca-certificates gnupg
+    ```
+    
+    - **Docker config (Example for Debian systems. For other dists, check https://docs.docker.com/engine/install/):**
+    ```bash
+    sudo install -m 0755 -d /etc/apt/keyrings && \
+    sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc && \
+    sudo chmod a+r /etc/apt/keyrings/docker.asc && \
+    sudo tee /etc/apt/sources.list.d/docker.sources <<EOF
+    Types: deb
+    URIs: https://download.docker.com/linux/debian
+    Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
+    Components: stable
+    Signed-By: /etc/apt/keyrings/docker.asc
+    EOF
+
+    sudo apt update && \
+    sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin # If some error occur, run `sudo apt --fix-broken install`
+    sudo systemctl enable --now docker && \
+    sudo systemctl enable containerd.service && \
+    sudo groupadd docker && \
+    sudo usermod -aG docker $USER && \
+    newgrp docker
     ```
 
-2.  **Start the Database:**
+    - **UV installation:**
+    ```bash
+    curl -LsSf https://astral.sh/uv/install.sh | sh && \
+    echo 'export PATH=$PATH:$HOME/.local/bin' >> ~/.profile && \
+    source $HOME/.profile
+    ```
+    
+    - **ClickHouse config and install:**
+    ```bash
+    curl -fsSL 'https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key' | \
+    sudo gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg && \
+    ARCH=$(dpkg --print-architecture) && \
+    echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg arch=${ARCH}] https://packages.clickhouse.com/deb stable main" | \
+    sudo tee /etc/apt/sources.list.d/clickhouse.list && \
+    sudo apt update && \
+    sudo apt install clickhouse-server clickhouse-client
+    ```
+
+2.  **Clone and Sync:**
+    ```bash
+    git clone https://github.com/mztbtg/leakharvester.git && \
+    cd leakharvester && \
+    uv sync && \
+    uv tool install .
+    ```
+
+3.  **Start the Database:**
     LeakHarvester manages its own Docker container.
     ```bash
-    uv run leakharvester db --init
+    leakharvester db --init
     ```
     *This will spin up ClickHouse, create the `vault` database, and apply the schema.*
 
 ## ⚡ Quick Start
 
 ### 1. Ingest Data
-Drop your raw `.txt` or `.csv` breach files into `data/raw`, or ingest a specific file directly. The engine automatically detects delimiters, headers, and maps columns like `email`, `password`, `username`.
+Ingest a specific text or `csv` file directly, or drop your raw breach files into `data/raw`. The engine automatically detects delimiters, headers, and maps columns like `email`, `password`, `username`, but you are able to configure it for yourself.
 
 ```bash
+# Show help
+leakharvester ingest --help
+
 # Ingest all files in data/raw
-uv run leakharvester ingest
+leakharvester ingest
 
 # Ingest a specific file (Auto-detect format)
-uv run leakharvester ingest --file ./breach_dump.txt
+leakharvester ingest --file ./breach_dump.txt
 
 # Ingest from stdin (Pipe)
-cat huge_breach.txt | uv run leakharvester ingest --stdin --format "email:pass"
+cat huge_breach.txt | leakharvester ingest --stdin --format "doc:email:pass"
 ```
 
 ### 2. Search
-Perform instant searches. By default, it uses a fuzzy `ILIKE` search.
+Perform instant searches. By default, it uses a fuzzy `ILIKE` search on all relevant columns.
+Use `lhs` command as an alias of `leakharvester search`.
 
 ```bash
+# Show help
+leakharvester search --help
+lhs --help
+
 # Fuzzy search (case-insensitive)
-uv run leakharvester search "company.com"
+leakharvester search "company.com"
+lhs company.com
 
 # Exact match (faster)
-uv run leakharvester search -e "ceo@company.com"
+lhs -e "ceo@company.com"
 
 # Search specific columns
-uv run leakharvester search "password123" --column password
+lhs "password123" --column password
+
+# Instant search (Exact case-sensitive match)
+lhs "ceo@somecompany.com" -C -e -c email
 ```
 
 ### 3. Smart Indexing (Optimization)
@@ -75,7 +133,7 @@ Don't rely on brute-force scans. Use the heuristic analyzer to recommend and app
 
 ```bash
 # Run analysis and interactive optimization
-uv run leakharvester index --auto-optimize
+leakharvester index --auto-optimize
 ```
 
 ### 4. Secure Transport (.lh)
@@ -83,10 +141,10 @@ Need to move sensitive data? Export it to a `.lh` container—a cryptographicall
 
 ```bash
 # Export to encrypted file (Prompts for password)
-uv run leakharvester export -o ./evidence.lh --compression-level 10
+leakharvester export -o ./evidence.lh --compression-level 10
 
 # Import back into another instance
-uv run leakharvester import -i ./evidence.lh
+leakharvester import -i ./evidence.lh
 ```
 
 ## 📚 Command Reference
@@ -107,7 +165,7 @@ Manage the ClickHouse instance and local configuration.
 ### `repair` - Quarantine Recovery
 Scans the quarantine directory and attempts aggressive regex recovery to salvage valid records from corrupted lines.
 ```bash
-uv run leakharvester repair
+leakharvester repair
 ```
 
 ### `index` - Performance Tuning

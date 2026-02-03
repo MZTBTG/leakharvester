@@ -54,7 +54,11 @@ def ensure_db_running(force_restart: bool = False):
 
     if not docker_cmd:
         log_warning("Docker or Docker Compose not found. Cannot auto-start database.")
-        log_info("Please ensure ClickHouse is running manually at localhost:8123.")
+        log_info(f"Please ensure ClickHouse is running manually at {host}:{port}.")
+
+        if not is_online():
+            log_error(f"Connection failed. Is ClickHouse running at {host}:{port}?")
+            raise typer.Exit(1)
         return
     
     if not (Path("docker-compose.yml").exists() or Path("compose.yaml").exists()):
