@@ -86,7 +86,7 @@ LeakHarvester is built on a Hexagonal Architecture (Ports & Adapters) to separat
     ```
     *This will spin up ClickHouse, create the `vault` database, and apply the schema.*
 
-## ⚡ Quick Start
+## Quick Start
 
 ### 1. Ingest Data
 Ingest a specific text or `csv` file directly, or drop your raw breach files into `data/raw`. The engine automatically detects delimiters, headers, and maps columns like `email`, `password`, `username`, but you are able to configure it for yourself.
