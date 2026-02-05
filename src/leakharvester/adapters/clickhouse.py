@@ -132,6 +132,16 @@ class ClickHouseAdapter(BreachRepository):
         sql = f"SELECT distinct partition_id FROM system.parts WHERE database = '{db}' AND table = '{table}' AND active = 1"
         return [row[0] for row in self.client.query(sql).result_rows]
 
+    def stream_query(self, query: str):
+        """Streams query results row by row."""
+        with self.client.query_rows_stream(query) as stream:
+            yield from stream
+
+    def stream_raw_query(self, query: str, fmt: str = 'CSVWithNames'):
+        """Streams raw bytes directly from ClickHouse with specified format."""
+        with self.client.raw_stream(query, fmt=fmt) as stream:
+            yield from stream
+
     def close(self) -> None:
         if hasattr(self._thread_local, 'client'):
             self._thread_local.client.close()
