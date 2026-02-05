@@ -1,5 +1,6 @@
 import typer
 from pathlib import Path
+from typing import Optional, List, Dict
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
 from rich.console import Console
@@ -13,6 +14,33 @@ import shutil
 import subprocess
 import time
 import uuid
+
+
+def get_docker_cmd() -> Optional[List[str]]:
+    """Detects available Docker Compose command."""
+    if shutil.which("docker"):
+        try:
+            subprocess.run(["docker", "compose", "version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            return ["docker", "compose"]
+        except subprocess.CalledProcessError:
+            pass
+    
+    if shutil.which("docker-compose"):
+        return ["docker-compose"]
+        
+    return None
+
+def get_clickhouse_env() -> Dict[str, str]:
+    """Prepares environment variables for Docker Compose."""
+    sm = SettingsManager()
+    active_path = sm.get_active_db_path()
+    
+    env = os.environ.copy()
+    if active_path:
+        env["DB_VOLUME_PATH"] = str(active_path.resolve())
+    else:
+        env["DB_VOLUME_PATH"] = "./data/clickhouse_data"
+    return env
 
 def ensure_db_running(force_restart: bool = False):
     host = settings.CLICKHOUSE_HOST or "localhost"
@@ -32,25 +60,8 @@ def ensure_db_running(force_restart: bool = False):
     if force_restart:
         log_warning("Forcing database restart to apply configuration changes...")
 
-    sm = SettingsManager()
-    active_path = sm.get_active_db_path()
-    
-    env = os.environ.copy()
-    if active_path:
-        env["DB_VOLUME_PATH"] = str(active_path.resolve())
-    else:
-        env["DB_VOLUME_PATH"] = "./data/clickhouse_data"
-
-    docker_cmd = None
-    if shutil.which("docker"):
-        try:
-            subprocess.run(["docker", "compose", "version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-            docker_cmd = ["docker", "compose"]
-        except subprocess.CalledProcessError:
-            pass
-    
-    if not docker_cmd and shutil.which("docker-compose"):
-        docker_cmd = ["docker-compose"]
+    env = get_clickhouse_env()
+    docker_cmd = get_docker_cmd()
 
     if not docker_cmd:
         log_warning("Docker or Docker Compose not found. Cannot auto-start database.")
@@ -350,7 +361,7 @@ def db_command(
         return
 
     if reset_all:
-        console.print("[bold red]FACTORY RESET PROTOCOL INITIATED[/bold red]")
+        console.print("[bold red]FACTORY RESET[/bold red]")
         steps = [
             "Stop and Remove Docker Containers",
             "Delete User Configuration (~/.config/leakharvester)",
@@ -369,7 +380,16 @@ def db_command(
             return
             
         log_info("Stopping Docker...")
-        subprocess.run(["docker", "compose", "down", "-v"], check=False)
+        
+        docker_cmd = get_docker_cmd()
+        if docker_cmd:
+            env = get_clickhouse_env()
+            try:
+                subprocess.run(docker_cmd + ["down", "-v"], check=False, env=env)
+            except Exception as e:
+                log_warning(f"Failed to stop Docker containers: {e}")
+        else:
+            log_warning("Docker command not found. Skipping container shutdown.")
         
         log_info("Removing Configs...")
         if sm.home_config.exists():
@@ -379,8 +399,27 @@ def db_command(
             
         active_path = sm.get_active_db_path()
         if active_path and active_path.exists():
-             log_info(f"Removing Data at {active_path}...")
-             shutil.rmtree(active_path)
+            log_info(f"Removing Data at {active_path}...")
+            try:
+                shutil.rmtree(active_path)
+            except Exception as e:
+                if isinstance(e, PermissionError) or (hasattr(e, 'errno') and e.errno == 13):
+                    log_warning("Permission denied on host. Attempting force removal via Docker...")
+                    try:
+                        parent = active_path.resolve().parent
+                        target = active_path.name
+                        cmd = [
+                            "docker", "run", "--rm",
+                            "-v", f"{parent}:/cleanup_mount",
+                            "--entrypoint", "rm",
+                            "clickhouse/clickhouse-server:24.3",
+                            "-rf", f"/cleanup_mount/{target}"
+                        ]
+                        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                    except subprocess.CalledProcessError as docker_err:
+                        log_error(f"Docker force removal failed: {docker_err.stderr.decode().strip()}")
+                else:
+                    log_error(f"Failed to delete {active_path}: {e}")
 
         log_success("Factory Reset Complete. System is clean.")
         return
