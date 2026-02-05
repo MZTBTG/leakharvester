@@ -4,7 +4,7 @@
 
 LeakHarvester is a specialized CLI tool designed for manage huge datasets and perform searches over them, without compromissing your storage space or collecting any kind of data. It ingests massive, unstructured breach datasets (CSV, Text and more on the future) into a highly optimized ClickHouse backend, enabling sub-second full-text searches across billions of records.
 
-## 🏗 Architecture
+## Architecture
 
 LeakHarvester is built on a Hexagonal Architecture (Ports & Adapters) to separate core domain logic from infrastructure.
 
@@ -15,7 +15,7 @@ LeakHarvester is built on a Hexagonal Architecture (Ports & Adapters) to separat
 
 [View Full Architecture Documentation (Soon...)](about:blank)
 
-## 🚀 Installation
+## Installation
 
 ### Prerequisites
 *   **Python 3.12+**
@@ -147,7 +147,7 @@ leakharvester export -o ./evidence.lh --compression-level 10
 leakharvester import -i ./evidence.lh
 ```
 
-## 📚 Command Reference
+## Command Reference
 
 ### `db` - Database Lifecycle
 Manage the ClickHouse instance and local configuration.
@@ -178,7 +178,7 @@ leakharvester repair
 ### `info` - Dashboard
 Displays a terminal dashboard with database health, storage efficiency (compression ratios), active indices, and top data sources.
 
-## 📂 Documentation Index
+## Documentation Index
 
 Detailed technical documentation is available for every module:
 
