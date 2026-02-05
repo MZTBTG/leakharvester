@@ -21,10 +21,8 @@ def search_command(
     full: bool = typer.Option(False, "--full", help="Disable empty and unnecessary column suppression (Show all columns including empty)."),
     print_columns: str = typer.Option(None, "-p", "--print-column", help="Columns to display in output (comma-separated)."),
     quiet: bool = typer.Option(False, "-q", "--quiet", help="Quiet mode (Data only, no banners)."),
-    csv_sep: str = typer.Option(None, "--csv", help="Output to CSV with separator (e.g. ',')."),
-    output: Path = typer.Option(None, "-o", "--output", help="Save pretty output to file."),
-    output_csv: Path = typer.Option(None, "--o-csv", help="Save CSV output to file (respects --csv separator)."),
-    experimental_speed: bool = typer.Option(False, "--experimental-speed", help="[Experimental] Enable high-performance raw streaming (standard CSV only)."),
+    output: Path = typer.Option(None, "-o", "--output", help="Save output to file (CSV by default, or Table if --pretty)."),
+    pretty: bool = typer.Option(False, "--pretty", help="Show results in a pretty table (slower, loads all to memory)."),
 ):
     """
     Searches the breach database with advanced filters.
@@ -59,7 +57,6 @@ def search_command(
     if not query:
         list_cols_and_exit()
         
-    # --- Column Selection Logic ---
     search_cols = []
     if column:
         requested = [c.strip() for c in column.split(",")]
@@ -71,9 +68,8 @@ def search_command(
     else:
         search_cols = [c for c in all_cols if c not in ('breach_date', 'import_date', 'source_file')]
         if not quiet:
-            log_info(f"Searching in default columns: {', '.join(search_cols)}")
+            log_info(f"Searching in columns: {', '.join(search_cols)}")
             
-    # Determine Output Columns
     selected_columns = all_cols
     if print_columns:
         requested_disp = [c.strip() for c in print_columns.split(",")]
@@ -83,14 +79,9 @@ def search_command(
             list_cols_and_exit()
         selected_columns = requested_disp
     else:
-        # If streaming CSV and no specific columns requested, default to excluding metadata columns
-        # unless full is requested (though prompt said to initialize with all cols except source_file etc)
-        # We will apply the "exclude metadata" rule for the default CSV case to match the prompt's intent.
-        is_csv_mode = (csv_sep is not None) or (output_csv is not None)
-        if is_csv_mode and not full:
+        if not pretty and not full:
              selected_columns = [c for c in all_cols if c not in ('breach_date', 'import_date', 'source_file')]
 
-    # --- Query Construction ---
     conditions = []
     safe_query = query.replace("'", "\'") 
     
@@ -120,7 +111,6 @@ def search_command(
 
     limit_clause = f"LIMIT {limit}" if limit > 0 else ""
     
-    # Explicitly select columns to ensure order matches selected_columns list
     select_clause = ", ".join(selected_columns)
     
     sql = f"""
@@ -137,7 +127,6 @@ def search_command(
         idx_str = " (Full Scan)" if string_mode else ""
         log_info(f"Executing {mode_str}/{case_str} Search: [bold]{query}[/bold] on {len(search_cols)} columns{idx_str}")
         
-        # Keep existing index warning logic
         if not string_mode:
             try:
                 indices = repo.get_indices("vault.breach_records")
@@ -169,25 +158,20 @@ def search_command(
     start_time = time.time()
     
     try:
-        if experimental_speed and (csv_sep is None or csv_sep == ",") and not output:
-             # --- Optimized Raw Stream for Default CSV ---
+        if not pretty:
             if not quiet:
-                 log_info("Using experimental high-performance raw streaming...")
+                 log_info("Streaming raw results...")
 
-            # Determine output destination
             out_file = None
             should_close = False
             
-            # Open file in binary mode for raw writing
-            if output_csv:
-                out_file = open(output_csv, 'wb')
+            if output:
+                out_file = open(output, 'wb')
                 should_close = True
             else:
-                # Use binary buffer of stdout
                 out_file = sys.stdout.buffer
 
             try:
-                # Use CSVWithNames to include headers automatically
                 raw_chunk_stream = repo.stream_raw_query(sql, fmt='CSVWithNames')
                 
                 byte_count = 0
@@ -195,58 +179,19 @@ def search_command(
                     out_file.write(chunk)
                     byte_count += len(chunk)
                 
-                if output_csv and not quiet:
+                if output and not quiet:
                     elapsed = time.time() - start_time
                     size_mb = byte_count / (1024 * 1024)
                     speed = size_mb / elapsed if elapsed > 0 else 0
-                    log_success(f"CSV saved to {output_csv} ({size_mb:.2f} MB, {elapsed:.2f}s, {speed:.2f} MB/s)")
+                    log_success(f"CSV saved to {output} ({size_mb:.2f} MB, {elapsed:.2f}s, {speed:.2f} MB/s)")
             
             finally:
                 if should_close and out_file:
                     out_file.close()
             return
 
-        # Use generator for results
         row_stream = repo.stream_query(sql)
         
-        # --- Case A: CSV / Stream Output ---
-        if (csv_sep is not None) or (output_csv is not None):
-            sep = csv_sep if csv_sep else ","
-            
-            # Determine output destination
-            out_file = None
-            should_close = False
-            if output_csv:
-                out_file = open(output_csv, 'w', encoding='utf-8', newline='')
-                should_close = True
-            else:
-                out_file = sys.stdout
-                
-            try:
-                writer = csv.writer(out_file, delimiter=sep)
-                
-                # Write header
-                writer.writerow(selected_columns)
-                
-                # Write rows from stream
-                count = 0
-                for row in row_stream:
-                    writer.writerow(row)
-                    count += 1
-                
-                # Only log success if writing to file and not quiet
-                if output_csv and not quiet:
-                     # Calculate time manually since we consumed stream
-                     elapsed = time.time() - start_time
-                     log_success(f"CSV saved to {output_csv} ({count} rows, {elapsed:.2f}s)")
-            
-            finally:
-                if should_close and out_file:
-                    out_file.close()
-            return
-
-        # --- Case B: Visual Table Output (Buffered) ---
-        # Consume stream into list as per requirements
         rows = list(row_stream)
         elapsed = time.time() - start_time
         
@@ -255,13 +200,11 @@ def search_command(
                 console.print(f"[yellow]No results found for '{query}'.[/yellow] (Time: {elapsed:.2f}s)")
             return
 
-        # Apply empty column suppression (Table Mode only)
         final_cols = []
         final_indices = []
         
         for i, col_name in enumerate(selected_columns):
             if not full:
-                # Specific suppression for table mode
                 if col_name == 'breach_date':
                     continue
                 
@@ -300,9 +243,10 @@ def search_command(
                 console_file = Console(file=f)
                 console_file.print(table)
             if not quiet:
-                log_success(f"Results saved to {output}")
+                log_success(f"Table saved to {output}")
         else:
             console.print(table)
         
     except Exception as e:
         log_error(f"Search failed: {e}")
+
