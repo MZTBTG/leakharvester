@@ -11,7 +11,7 @@ class SettingsManager:
     2. Project Root: ./lh-settings.json
     """
     
-    def __init__(self):
+    def __init__(self) -> None:
         self.home_config = Path.home() / ".config" / "leakharvester" / "lh-settings.json"
         self.local_config = Path("lh-settings.json")
         self._settings: Dict[str, Any] = self._load_settings()
@@ -61,6 +61,13 @@ class SettingsManager:
 
     def set_instance_id(self, instance_id: str, local: bool = False) -> None:
         self._settings["instance_id"] = instance_id
+        self.save_settings(self._settings, local=local)
+
+    def get_compression_level(self) -> int:
+        return self._settings.get("compression_level", 3)
+
+    def set_compression_level(self, level: int, local: bool = False) -> None:
+        self._settings["compression_level"] = level
         self.save_settings(self._settings, local=local)
 
     def get_all(self) -> Dict[str, Any]:

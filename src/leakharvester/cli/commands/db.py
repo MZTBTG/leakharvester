@@ -110,17 +110,18 @@ def ensure_db_running(force_restart: bool = False):
     log_error("Database failed to respond after 60 seconds.")
     raise typer.Exit(1)
 
-DDL_SQL = """
+def get_ddl_sql(compression_level: int) -> str:
+    return f"""
 CREATE DATABASE IF NOT EXISTS vault;
 
 CREATE TABLE IF NOT EXISTS vault.breach_records
 (
-    `source_file` LowCardinality(String) CODEC(ZSTD(3)),
-    `breach_date` Date CODEC(Delta(2), ZSTD(3)),
-    `import_date` DateTime DEFAULT now() CODEC(Delta(4), ZSTD(3)),
-    `email` String CODEC(ZSTD(3)),
-    `username` String CODEC(ZSTD(3)),
-    `password` String CODEC(ZSTD(3))
+    `source_file` LowCardinality(String) CODEC(ZSTD({compression_level})),
+    `breach_date` Date CODEC(Delta(2), ZSTD({compression_level})),
+    `import_date` DateTime DEFAULT now() CODEC(Delta(4), ZSTD({compression_level})),
+    `email` String CODEC(ZSTD({compression_level})),
+    `username` String CODEC(ZSTD({compression_level})),
+    `password` String CODEC(ZSTD({compression_level}))
 )
 ENGINE = MergeTree
 ORDER BY (email, source_file)
@@ -142,6 +143,7 @@ ENGINE = TinyLog;
 def db_command(
     path: Path = typer.Option(None, "--path", "-p", help="Set or query the active database path."),
     init: bool = typer.Option(False, "--init", help="Initialize the database at the configured path."),
+    compression: int = typer.Option(3, "--compression", "-c", help="Set compression level (1-19) for new tables."),
     status: bool = typer.Option(False, "--status", "-s", help="Check database and Docker status."),
     lsfiles: bool = typer.Option(False, "--lsfiles", help="List all ingested source files."),
     rmfile: str = typer.Option(None, "--rmfile", help="Remove specific files (comma-separated)."),
@@ -303,12 +305,17 @@ def db_command(
         return
 
     if init:
+        if not (1 <= compression <= 19):
+            log_error("Compression level must be between 1 and 19.")
+            raise typer.Exit(1)
+            
         ensure_db_running(force_restart=True)
         try:
             settings.create_dirs()
+            sm.set_compression_level(compression)
             repo = ClickHouseAdapter()
             
-            statements = DDL_SQL.split(";")
+            statements = get_ddl_sql(compression).split(";")
             for statement in statements:
                 if statement.strip():
                     repo.execute_ddl(statement)

@@ -152,6 +152,7 @@ leakharvester import -i ./evidence.lh
 ### `db` - Database Lifecycle
 Manage the ClickHouse instance and local configuration.
 *   `--init`: Start Docker and apply DDL schema.
+*   `--compression`, `-c`: Set compression level (1-19) for new tables (Default: 3).
 *   `--status`: Check connection and row counts.
 *   `--lsfiles`: List ingested source files and statistics.
 *   `--rmfile`: Wipe data associated with specific files.

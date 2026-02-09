@@ -148,7 +148,7 @@ def search_command(
                     if target_col and any(t in type_def for t in ("inverted", "tokenbf", "ngrambf")):
                         optimized_cols.add(target_col)
                 
-                unindexed = [c for c in search_cols if c not in optimized_cols]
+                unindexed = [c for c in search_cols if c not in optimized_cols and c != 'email']
                 if unindexed:
                     console.print(f"[yellow]⚠ Warning: Full Table Scan detected on columns: {unindexed}[/yellow]")
                     console.print("[dim]  Performance may be slow. Run 'leakharvester index --auto-optimize' to index them.[/dim]")

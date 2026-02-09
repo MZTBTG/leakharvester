@@ -1,10 +1,10 @@
 import threading
-from typing import TYPE_CHECKING, List, Tuple
+from typing import TYPE_CHECKING, Optional
 from leakharvester.ports.repository import BreachRepository
 from leakharvester.config import settings
+from leakharvester.settings_manager import SettingsManager
 
 if TYPE_CHECKING:
-    import clickhouse_connect
     from clickhouse_connect.driver.client import Client
     import pyarrow as pa
 
@@ -69,8 +69,11 @@ class ClickHouseAdapter(BreachRepository):
         result = self.client.query(f"SELECT name, type FROM system.columns WHERE database = '{db}' AND table = '{table}'")
         return [(row[0], row[1]) for row in result.result_rows]
 
-    def add_column(self, table_name: str, column_name: str, column_type: str = "String CODEC(ZSTD(3))") -> None:
+    def add_column(self, table_name: str, column_name: str, column_type: Optional[str] = None) -> None:
         """Adds a new column to the table."""
+        if column_type is None:
+            compression_level = SettingsManager().get_compression_level()
+            column_type = f"String CODEC(ZSTD({compression_level}))"
         self.client.command(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {column_name} {column_type}")
 
     def get_table_stats(self, table_name: str) -> dict:

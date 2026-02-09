@@ -84,7 +84,7 @@ def index_command(
             raise typer.Exit(1)
         target_cols = requested
     elif auto_optimize:
-        target_cols = repo.get_columns("vault.breach_records")
+        target_cols = [c for c in repo.get_columns("vault.breach_records") if c != 'email']
     else:
         if not remove: 
              log_error("Please specify columns (-c) or enable automation (-a) or list (-l).")
