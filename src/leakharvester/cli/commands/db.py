@@ -127,9 +127,9 @@ ORDER BY (email, source_file)
 PARTITION BY source_file
 SETTINGS
     index_granularity = 8192,
-    max_bytes_to_merge_at_min_space_in_pool = 10485760,
+    max_bytes_to_merge_at_min_space_in_pool = 16777216,
     min_bytes_for_wide_part = 10485760,
-    old_parts_lifetime = 60;
+    old_parts_lifetime = 30;
 
 CREATE TABLE IF NOT EXISTS vault.system_info
 (
