@@ -75,8 +75,8 @@ LeakHarvester is built on a Hexagonal Architecture (Ports & Adapters) to separat
     ```bash
     git clone https://github.com/mztbtg/leakharvester.git && \
     cd leakharvester && \
-    uv sync && \
-    uv tool install .
+    uv sync
+    # To update it, you can run 'git pull' and 'uv tool install --reinstall .'.
     ```
 
 3.  **Start the Database:**

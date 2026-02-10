@@ -398,6 +398,14 @@ def db_command(
         else:
             log_warning("Docker command not found. Skipping container shutdown.")
         
+        log_info("Ensuring no zombie processes remain...")
+        try:
+            subprocess.run(["pkill", "clickhouse"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(1)
+            subprocess.run(["pkill", "-9", "clickhouse"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
         log_info("Removing Configs...")
         if sm.home_config.exists():
             sm.home_config.unlink()
