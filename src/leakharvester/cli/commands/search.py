@@ -18,7 +18,7 @@ def search_command(
     exact: bool = typer.Option(False, "-e", "--exact", help="Exact full-string match (case-insensitive unless -C is used)."),
     case: bool = typer.Option(False, "-C", "--case", help="Case sensitive matching."),
     string_mode: bool = typer.Option(False, "-s", "--string", help="Force Full Table Scan (Ignore Indexes)."),
-    full: bool = typer.Option(False, "--full", help="Disable empty and unnecessary column suppression (Show all columns including empty)."),
+    full: bool = typer.Option(False, "--full", help="Show all columns including empty."),
     print_columns: str = typer.Option(None, "-p", "--print-column", help="Columns to display in output (comma-separated)."),
     quiet: bool = typer.Option(False, "-q", "--quiet", help="Quiet mode (Data only, no banners)."),
     output: Path = typer.Option(None, "-o", "--output", help="Save output to file (CSV by default, or Table if --pretty)."),
