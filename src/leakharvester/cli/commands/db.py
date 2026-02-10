@@ -400,11 +400,26 @@ def db_command(
         
         log_info("Ensuring no zombie processes remain...")
         try:
-            subprocess.run(["pkill", "clickhouse"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["pkill", "-9", "-f", "clickhouse"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(1)
-            subprocess.run(["pkill", "-9", "clickhouse"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
+            
+            check = subprocess.run(["pgrep", "-f", "clickhouse"], capture_output=True, text=True)
+            if check.returncode == 0:
+                pids_raw = check.stdout.strip().split('\n')
+                pids_display = ", ".join(pids_raw)
+                pids_cmd = " ".join(pids_raw)
+                
+                log_warning(f"Zombie ClickHouse processes detected (PIDs: {pids_display}). Escalate privileges to kill...")
+                
+                try:
+                    subprocess.run(["sudo", "pkill", "-9", "-f", "clickhouse"], check=True)
+                    log_success("Zombie processes killed via sudo.")
+                except subprocess.CalledProcessError:
+                    Console().print(f"[bold red]CRITICAL: Could not kill zombie processes (PIDs: {pids_display}).[/bold red]")
+                    Console().print("[bold yellow]Please run this command manually:[/bold yellow]")
+                    Console().print(f"[bold]sudo kill -9 {pids_cmd}[/bold]")
+        except Exception as e:
+            log_warning(f"Zombie cleanup check failed: {e}")
 
         log_info("Removing Configs...")
         if sm.home_config.exists():
