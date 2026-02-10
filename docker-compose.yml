@@ -12,14 +12,21 @@ services:
     volumes:
       - ${DB_VOLUME_PATH:-./data/clickhouse_data}:/var/lib/clickhouse
       - ./data/clickhouse_logs:/var/log/clickhouse-server
-      - ./data/clickhouse_config/tune_logging.xml:/etc/clickhouse-server/config.d/tune_logging.xml
+      - ./data/clickhouse_config:/etc/clickhouse-server/config.d
     environment:
       - CLICKHOUSE_DB=vault
       - CLICKHOUSE_USER=leakharvester
-      - CLICKHOUSE_PASSWORD=secret_password
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-secret_password}
       - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
     cap_add:
       - SYS_NICE
       - NET_ADMIN
       - IPC_LOCK
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    stop_grace_period: 1m
     restart: unless-stopped
