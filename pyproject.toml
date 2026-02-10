@@ -45,3 +45,6 @@ testpaths = ["tests"]
 [project.scripts]
 leakharvester = "leakharvester.cli.main:app"
 lhs = "leakharvester.cli.main:lhs_entry"
+
+[tool.uv]
+package = true
