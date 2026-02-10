@@ -392,6 +392,9 @@ def db_command(
         if docker_cmd:
             env = get_clickhouse_env()
             try:
+                log_info("Force stopping containers...")
+                subprocess.run(docker_cmd + ["kill"], check=False, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
                 subprocess.run(docker_cmd + ["down", "-v"], check=False, env=env)
             except Exception as e:
                 log_warning(f"Failed to stop Docker containers: {e}")
@@ -415,6 +418,7 @@ def db_command(
                     subprocess.run(["sudo", "pkill", "-9", "-f", "clickhouse"], check=True)
                     log_success("Zombie processes killed via sudo.")
                 except subprocess.CalledProcessError:
+                    subprocess.run(["stty", "sane"], check=False)
                     Console().print(f"[bold red]CRITICAL: Could not kill zombie processes (PIDs: {pids_display}).[/bold red]")
                     Console().print("[bold yellow]Please run this command manually:[/bold yellow]")
                     Console().print(f"[bold]sudo kill -9 {pids_cmd}[/bold]")
