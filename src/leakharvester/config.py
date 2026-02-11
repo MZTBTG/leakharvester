@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     CLICKHOUSE_PASSWORD: str = "secret_password"
     CLICKHOUSE_DB: str = "vault"
     
-    BATCH_SIZE: int = 50_000
+    BATCH_SIZE: int = 1_000_000
     
     model_config = SettingsConfigDict(
         env_file=".env", 

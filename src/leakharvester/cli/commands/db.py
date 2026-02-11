@@ -101,7 +101,7 @@ def ensure_db_running(force_restart: bool = False):
         raise typer.Exit(1)
 
     log_info("Waiting for database to initialize...")
-    for i in range(60):
+    for i in range(120):
         if is_online():
             log_success("Database came online!")
             return

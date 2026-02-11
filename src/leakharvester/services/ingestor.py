@@ -278,35 +278,71 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                     if staging_table and not append: self.repository.drop_table(staging_table)
                     return
 
-            error_container = []
+            if "columns" in config:
+                if not self._validate_and_sync_schema(config["columns"]):
+                    if staging_table and not append: self.repository.drop_table(staging_table)
+                    return
 
-            for _ in range(num_workers):
-                t = threading.Thread(
-                    target=self._ingestion_worker, 
-                    args=(upload_queue, stop_event, error_container),
-                    daemon=True
-                )
-                t.start()
-                workers.append(t)
-
-            chunk_idx = 0
+            # Refactored for High-Performance Arrow Stream (Subprocess) with Pipelining & Fan-Out
+            log_info(f"Starting Native Arrow Stream to {ingest_table} with {num_workers} workers...")
             
+            # State for multi-worker
+            procs = []
+            write_queues = []
+            writer_threads = []
+            writer_error = []
+            
+            def _stream_writer(idx, process_handle, q):
+                arrow_writer = None
+                try:
+                    while True:
+                        item = q.get()
+                        if item is None:
+                            q.task_done()
+                            break
+                        
+                        table = item
+                        try:
+                            if arrow_writer is None:
+                                arrow_writer = pa.ipc.new_stream(process_handle.stdin, table.schema)
+                            arrow_writer.write_table(table)
+                        except Exception as e:
+                            writer_error.append(e)
+                            break
+                        finally:
+                            q.task_done()
+                            
+                except Exception as e:
+                    writer_error.append(e)
+                finally:
+                    try:
+                        if arrow_writer: 
+                            arrow_writer.close()
+                    except (OSError, ValueError): pass 
+                    try: 
+                        if process_handle.stdin: 
+                            process_handle.stdin.close()
+                    except (OSError, ValueError): pass
+
             try:
                 import polars as pl
+                import pyarrow as pa
+                
+                chunk_idx = 0
                 reader = pl.read_csv_batched(
                     input_path,
                     separator=config.get("separator", ","),
                     quote_char=config.get("quote_char", '"'),
                     has_header=config.get("has_header", False),
                     batch_size=batch_size,
-                                            ignore_errors=True,
-                                            truncate_ragged_lines=True,
-                                            low_memory=True,
-                                            encoding="utf8-lossy",
-                                            infer_schema_length=1000
-                                        )
+                    ignore_errors=True,
+                    truncate_ragged_lines=True,
+                    encoding="utf8-lossy",
+                    infer_schema_length=1000
+                )
+                
                 while True:
-                    if stop_event.is_set():
+                    if writer_error:
                         break
                     
                     batches = reader.next_batches(1)
@@ -350,45 +386,62 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
 
                     df = df.with_columns([
                         pl.lit(source_label).alias("source_file"),
-                        pl.lit(None).cast(pl.Date).alias("breach_date"),
-                        pl.lit(None).cast(pl.Datetime).alias("import_date")
                     ])
 
-                    target_cols = CANONICAL_SCHEMA.names()
+                    target_cols = ["source_file", "email", "username", "password"]
                     current_set = set(df.columns)
-                    missing_exprs = []
                     
+                    missing_exprs = []
                     for tc in target_cols:
                         if tc not in current_set:
-                            if tc == "breach_date" or tc == "import_date": continue
                             missing_exprs.append(pl.lit("").alias(tc))
                     
                     if missing_exprs:
                         df = df.with_columns(missing_exprs)
 
-                    cols_to_keep = [c for c in CANONICAL_SCHEMA.names() if c in df.columns]
-                    final_df = df.select(cols_to_keep)
-                    
-                    exprs = [pl.col(name).cast(dtype) for name, dtype in CANONICAL_SCHEMA.items() if name in final_df.columns]
-                    final_df = final_df.select(exprs)
+                    final_df = df.select(target_cols)
 
                     try:
                         arrow_table = final_df.to_arrow()
-                        self._push_to_worker(upload_queue, (arrow_table, ingest_table), stop_event, error_container)
+                        
+                        # Initialize processes on first batch
+                        if not procs:
+                            for i in range(num_workers):
+                                p = self.repository.get_arrow_stream_process(ingest_table, columns=target_cols)
+                                procs.append(p)
+                                q = queue.Queue(maxsize=3) # Small buffer per worker
+                                write_queues.append(q)
+                                t = threading.Thread(target=_stream_writer, args=(i, p, q), daemon=True)
+                                t.start()
+                                writer_threads.append(t)
+
+                        # Round-robin distribution
+                        worker_idx = (chunk_idx - 1) % num_workers
+                        write_queues[worker_idx].put(arrow_table)
+                        
                     except Exception as e:
                         log_error(f"Failed to ingest chunk {chunk_idx}: {e}")
                         q_path = staging_dir.parent / "quarantine" / f"failed_ingest_{input_path.stem}_{chunk_idx}.parquet"
                         final_df.write_parquet(q_path)
 
-                if not stop_event.is_set():
-                    for _ in range(num_workers):
-                        self._push_to_worker(upload_queue, None, stop_event, error_container)
-                    upload_queue.join()
-                    for t in workers:
-                        t.join()
+                # Cleanup
+                for q in write_queues:
+                    q.put(None)
+                
+                for t in writer_threads:
+                    t.join()
+                
+                if writer_error:
+                    raise writer_error[0]
+                
+                for p in procs:
+                    p.stdin = None # Fix flush error
+                    stdout, stderr = p.communicate()
+                    if p.returncode != 0:
+                        raise Exception(f"Worker process failed: {stderr.decode()}")
 
-                if error_container:
-                    raise error_container[0]
+                if not procs:
+                    log_warning("No data processed.")
 
                 log_success(f"Ingestion completed. Total chunks: {chunk_idx}")
                 
@@ -397,6 +450,9 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
 
             except Exception as e:
                 log_error(f"Processing error: {e}")
+                for p in procs:
+                    try: p.kill()
+                    except: pass
                 raise e
 
         except KeyboardInterrupt:
@@ -410,8 +466,7 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
             stop_event.set()
             if staging_table: self.repository.drop_table(staging_table)
         finally:
-            for t in workers:
-                t.join(timeout=2.0)
+            pass
 
     def process_stream(self, stream: Any, staging_dir: Path, quarantine_dir: Path, batch_size: int, source_name: str = "stdin", format: str = "auto", no_check: bool = False, num_workers: int = 1, append: bool = False) -> None:
         """
@@ -441,27 +496,54 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
             if staging_table: self.repository.drop_table(staging_table)
             return
 
-        upload_queue = queue.Queue(maxsize=num_workers * 2)
-        stop_event = threading.Event()
-        error_container = []
-
-        workers = []
-        for _ in range(num_workers):
-            t = threading.Thread(
-                target=self._ingestion_worker, 
-                args=(upload_queue, stop_event, error_container),
-                daemon=True
-            )
-            t.start()
-            workers.append(t)
-        
         log_info(f"Starting ingestion via Stream ({source_name}) [Format: {format}] [Delim: '{delimiter}'] [Cols: {columns}] [Append: {append}]")
+        log_info(f"Starting Native Arrow Stream to {ingest_table} with {num_workers} workers...")
+
+        # State for multi-worker
+        procs = []
+        write_queues = []
+        writer_threads = []
+        writer_error = []
+        
+        def _stream_writer(idx, process_handle, q):
+            arrow_writer = None
+            try:
+                while True:
+                    item = q.get()
+                    if item is None:
+                        q.task_done()
+                        break
+                    
+                    table = item
+                    try:
+                        if arrow_writer is None:
+                            arrow_writer = pa.ipc.new_stream(process_handle.stdin, table.schema)
+                        arrow_writer.write_table(table)
+                    except Exception as e:
+                        writer_error.append(e)
+                        break
+                    finally:
+                        q.task_done()
+                        
+            except Exception as e:
+                writer_error.append(e)
+            finally:
+                try:
+                    if arrow_writer: 
+                        arrow_writer.close()
+                except (OSError, ValueError): pass 
+                try: 
+                    if process_handle.stdin: 
+                        process_handle.stdin.close()
+                except (OSError, ValueError): pass
         
         try:
             import polars as pl
+            import pyarrow as pa
+            
             for df in self.file_storage.read_stream_batched(stream, batch_size=batch_size):
-                if stop_event.is_set():
-                    break  
+                if writer_error:
+                    break
 
                 chunk_idx += 1
                 total_rows += df.height
@@ -505,39 +587,59 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
 
                 df = df.with_columns([
                     pl.lit(source_name).alias("source_file"),
-                    pl.lit(None).cast(pl.Date).alias("breach_date"),
-                    pl.lit(None).cast(pl.Datetime).alias("import_date")
                 ])
                 
-                target_cols = CANONICAL_SCHEMA.names()
-                current_cols = set(df.columns)
+                target_cols = ["source_file", "email", "username", "password"]
+                current_set = set(df.columns)
                 missing_exprs = []
                 for tc in target_cols:
-                    if tc not in current_cols:
-                         if tc == "breach_date" or tc == "import_date": continue 
+                    if tc not in current_set:
                          missing_exprs.append(pl.lit("").alias(tc))
                 
                 if missing_exprs:
                     df = df.with_columns(missing_exprs)
                 
-                cols_to_keep = list(set(CANONICAL_SCHEMA.names()) | (set(columns) - {"null"}))
-                final_df = df.select([c for c in cols_to_keep if c in df.columns])
+                final_df = df.select(target_cols)
                 
                 try:
                     arrow_table = final_df.to_arrow()
-                    self._push_to_worker(upload_queue, (arrow_table, ingest_table), stop_event, error_container)
+                    
+                    # Initialize processes on first batch
+                    if not procs:
+                        for i in range(num_workers):
+                            p = self.repository.get_arrow_stream_process(ingest_table, columns=target_cols)
+                            procs.append(p)
+                            q = queue.Queue(maxsize=3) # Small buffer per worker
+                            write_queues.append(q)
+                            t = threading.Thread(target=_stream_writer, args=(i, p, q), daemon=True)
+                            t.start()
+                            writer_threads.append(t)
+
+                    # Round-robin distribution
+                    worker_idx = (chunk_idx - 1) % num_workers
+                    write_queues[worker_idx].put(arrow_table)
+
                 except Exception as e:
                     log_error(f"Failed to convert chunk {chunk_idx}: {e}")
-            
-            if not stop_event.is_set():
-                for _ in range(num_workers):
-                    self._push_to_worker(upload_queue, None, stop_event, error_container)
-                upload_queue.join()
-                for t in workers:
-                    t.join()
 
-            if error_container:
-                raise error_container[0]
+            # Cleanup
+            for q in write_queues:
+                q.put(None)
+            
+            for t in writer_threads:
+                t.join()
+            
+            if writer_error:
+                raise writer_error[0]
+            
+            for p in procs:
+                p.stdin = None 
+                stdout, stderr = p.communicate()
+                if p.returncode != 0:
+                    raise Exception(f"Worker process failed: {stderr.decode()}")
+
+            if not procs:
+                log_warning("No data processed.")
             
             total_time = time.time() - start_time
             log_success(f"Stream ingestion completed. Total chunks: {chunk_idx} | Lines: {total_rows} | Time: {total_time:.2f}s")
@@ -554,9 +656,12 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
             log_error(f"Error during stream ingestion: {e}")
             stop_event.set()
             if staging_table: self.repository.drop_table(staging_table)
+            # Kill procs
+            for p in procs:
+                try: p.kill()
+                except: pass
         finally:
-            for t in workers:
-                t.join(timeout=2.0)
+            pass
 
     def _ingestion_worker(self, q: queue.Queue, error_event: threading.Event, error_container: list) -> None:
         """Background worker to consume Arrow tables and insert into ClickHouse."""

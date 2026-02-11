@@ -99,6 +99,34 @@ class ClickHouseAdapter(BreachRepository):
             "compression_ratio": result[0][3]
         }
 
+    def get_arrow_stream_process(self, table_name: str, columns: list[str] = None):
+        """Returns a subprocess.Popen object for streaming Arrow data to ClickHouse."""
+        import subprocess
+        # Use port 9000 for native client (default for clickhouse-client)
+        # Bypassing HTTP overhead by using the native binary
+        native_port = 9000
+        
+        query = f"INSERT INTO {table_name} FORMAT ArrowStream"
+        if columns:
+            col_str = ", ".join(columns)
+            query = f"INSERT INTO {table_name} ({col_str}) FORMAT ArrowStream"
+        
+        cmd = [
+            "clickhouse-client",
+            "--host", self.host,
+            "--port", str(native_port),
+            "--user", self.username,
+            "--password", self.password,
+            "--query", query
+        ]
+        
+        return subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+
     def get_source_file_stats(self, table_name: str, limit: int = 50) -> list:
         """Returns aggregated stats per source file."""
         sql = f"""

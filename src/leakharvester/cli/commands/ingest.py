@@ -13,9 +13,9 @@ def ingest_command(
     source_name: str = typer.Option(None, "--source-name", help="Custom name for the data source."),
     format: str = typer.Option("auto", help="Input format. Use 'auto' for detection. Specify 'col1:col2' (e.g. 'email:password') to skip detection (Faster startup)."),
     no_check: bool = typer.Option(False, "--unsafe", help="Disable email validation in Fast Path (Dangerous but Fastest)."),
-    batch_size: int = typer.Option(None, help="Batch size (rows) per chunk. Defaults to config (50K)."),
+    batch_size: int = typer.Option(None, help="Batch size (rows) per chunk. Defaults to config (1M)."),
     watch: bool = typer.Option(False, help="Watch raw directory for new files."),
-    workers: int = typer.Option(1, "--workers", "-w", help="Number of concurrent upload workers. Defaults to 1."),
+    workers: int = typer.Option(4, "--workers", "-w", help="Number of concurrent upload workers. Defaults to 4."),
     append: bool = typer.Option(False, "--append", help="Append data to existing source file instead of overwriting.")
 ):
     """Ingests data from raw directory, specific file, or stdin pipe."""
