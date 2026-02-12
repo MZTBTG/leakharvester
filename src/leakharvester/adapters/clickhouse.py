@@ -102,8 +102,6 @@ class ClickHouseAdapter(BreachRepository):
     def get_arrow_stream_process(self, table_name: str, columns: list[str] = None):
         """Returns a subprocess.Popen object for streaming Arrow data to ClickHouse."""
         import subprocess
-        # Use port 9000 for native client (default for clickhouse-client)
-        # Bypassing HTTP overhead by using the native binary
         native_port = 9000
         
         query = f"INSERT INTO {table_name} FORMAT ArrowStream"
@@ -127,7 +125,7 @@ class ClickHouseAdapter(BreachRepository):
             stderr=subprocess.PIPE
         )
 
-    def get_source_file_stats(self, table_name: str, limit: int = 50) -> list:
+    def get_source_file_stats(self, table_name: str, limit: int = 200) -> list:
         """Returns aggregated stats per source file."""
         sql = f"""
         SELECT 

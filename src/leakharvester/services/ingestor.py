@@ -228,9 +228,7 @@ class BreachIngestor:
             self.repository.create_staging_table(staging_table, target_table)
             ingest_table = staging_table
 
-        upload_queue = queue.Queue(maxsize=num_workers * 2)
         stop_event = threading.Event()
-        workers = []
 
         try:
             config = {}
@@ -278,10 +276,25 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                     if staging_table and not append: self.repository.drop_table(staging_table)
                     return
 
-            if "columns" in config:
-                if not self._validate_and_sync_schema(config["columns"]):
-                    if staging_table and not append: self.repository.drop_table(staging_table)
-                    return
+            try:
+                valid_db_cols = set(self.repository.get_columns(target_table))
+            except Exception as e:
+                log_error(f"Failed to fetch schema: {e}")
+                if staging_table and not append: self.repository.drop_table(staging_table)
+                return
+
+            detected_cols = [c for c in config.get("columns", []) if c not in ("unknown", "null")]
+            potential_cols = ["source_file"] + detected_cols
+            # Deduplicate preserving order
+            seen = set()
+            potential_cols = [x for x in potential_cols if not (x in seen or seen.add(x))]
+            
+            target_cols = [c for c in potential_cols if c in valid_db_cols]
+            
+            if not target_cols:
+                log_error("No valid columns found to ingest.")
+                if staging_table and not append: self.repository.drop_table(staging_table)
+                return
 
             # Refactored for High-Performance Arrow Stream (Subprocess) with Pipelining & Fan-Out
             log_info(f"Starting Native Arrow Stream to {ingest_table} with {num_workers} workers...")
@@ -337,7 +350,7 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                     batch_size=batch_size,
                     ignore_errors=True,
                     truncate_ragged_lines=True,
-                    encoding="utf8-lossy",
+                    encoding=config.get("encoding", "utf8"),
                     infer_schema_length=1000
                 )
                 
@@ -388,7 +401,6 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                         pl.lit(source_label).alias("source_file"),
                     ])
 
-                    target_cols = ["source_file", "email", "username", "password"]
                     current_set = set(df.columns)
                     
                     missing_exprs = []
@@ -404,24 +416,22 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                     try:
                         arrow_table = final_df.to_arrow()
                         
-                        # Initialize processes on first batch
                         if not procs:
                             for i in range(num_workers):
                                 p = self.repository.get_arrow_stream_process(ingest_table, columns=target_cols)
                                 procs.append(p)
-                                q = queue.Queue(maxsize=3) # Small buffer per worker
+                                q = queue.Queue(maxsize=3)
                                 write_queues.append(q)
                                 t = threading.Thread(target=_stream_writer, args=(i, p, q), daemon=True)
                                 t.start()
                                 writer_threads.append(t)
 
-                        # Round-robin distribution
                         worker_idx = (chunk_idx - 1) % num_workers
                         write_queues[worker_idx].put(arrow_table)
                         
                     except Exception as e:
                         log_error(f"Failed to ingest chunk {chunk_idx}: {e}")
-                        q_path = staging_dir.parent / "quarantine" / f"failed_ingest_{input_path.stem}_{chunk_idx}.parquet"
+                        q_path = quarantine_dir / f"failed_ingest_{input_path.stem}_{chunk_idx}.parquet"
                         final_df.write_parquet(q_path)
 
                 # Cleanup
@@ -435,7 +445,7 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                     raise writer_error[0]
                 
                 for p in procs:
-                    p.stdin = None # Fix flush error
+                    p.stdin = None
                     stdout, stderr = p.communicate()
                     if p.returncode != 0:
                         raise Exception(f"Worker process failed: {stderr.decode()}")
@@ -462,9 +472,9 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
             raise
         except Exception as e:
             log_error(f"Error during processing of {input_path}: {e}")
-            self._move_to_quarantine(input_path, quarantine_dir)
             stop_event.set()
             if staging_table: self.repository.drop_table(staging_table)
+            self._move_to_quarantine(input_path, quarantine_dir)
         finally:
             pass
 
