@@ -8,6 +8,7 @@ import io
 import re
 from rich.console import Console
 from rich.panel import Panel
+from leakharvester.config import settings
 from leakharvester.ports.repository import BreachRepository
 from leakharvester.ports.file_storage import FileStorage
 from leakharvester.domain.rules import detect_column_mapping
@@ -56,7 +57,7 @@ class BreachIngestor:
         Checks if columns exist in ClickHouse. Uses callback to confirm addition of missing ones.
         """
         try:
-            existing_cols = set(self.repository.get_columns("vault.breach_records"))
+            existing_cols = set(self.repository.get_columns(settings.BREACH_TABLE))
         except Exception as e:
             log_error(f"Failed to fetch schema from DB: {e}")
             return False
@@ -80,7 +81,7 @@ class BreachIngestor:
             try:
                 for col in missing_cols:
                     log_info(f"Adding column '{col}'...")
-                    self.repository.add_column("vault.breach_records", col)
+                    self.repository.add_column(settings.BREACH_TABLE, col)
                 log_success("Schema updated successfully.")
                 return True
             except Exception as e:
@@ -220,9 +221,9 @@ class BreachIngestor:
         append: bool = False,
         on_schema_mismatch: Optional[Callable[[List[str]], bool]] = None
     ) -> None:
-        log_info(f"Starting processing of: {input_path} [Format: {format}, NoCheck: {no_check}, Workers: {num_workers}, Append: {append}]")
+        log_info(f"Starting processing of: {input_path} [Format: {format}, SkipVal: {skip_email_validation}, Workers: {num_workers}, Append: {append}]")
         
-        target_table = "vault.breach_records"
+        target_table = settings.BREACH_TABLE
         source_label = custom_source_name or input_path.name
         staging_table = None
 
@@ -493,7 +494,7 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
         import time
         warnings.filterwarnings("ignore", message="CSV malformed")
         
-        target_table = "vault.breach_records"
+        target_table = settings.BREACH_TABLE
         staging_table = None
         
         if append:

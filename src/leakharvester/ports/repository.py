@@ -31,3 +31,21 @@ class BreachRepository(Protocol):
         Replaces a partition in the target table with data from the staging table.
         """
         ...
+
+    def get_columns(self, table_name: str) -> list[str]:
+        """
+        Returns a list of column names for the specified table.
+        """
+        ...
+
+    def add_column(self, table_name: str, column_name: str, column_type: str = None) -> None:
+        """
+        Adds a new column to the table.
+        """
+        ...
+
+    def get_arrow_stream_process(self, table_name: str, columns: list[str] = None):
+        """
+        Returns a subprocess.Popen object for streaming Arrow data to ClickHouse.
+        """
+        ...
