@@ -12,6 +12,7 @@ from leakharvester.ports.repository import BreachRepository
 from leakharvester.ports.file_storage import FileStorage
 from leakharvester.domain.schemas import CANONICAL_SCHEMA
 from leakharvester.domain.exceptions import SchemaMismatchError, AmbiguousFormatException
+from leakharvester.domain.rules import detect_column_mapping
 from leakharvester.adapters.console import log_info, log_error, log_warning, log_success
 
 import polars as pl
@@ -46,7 +47,7 @@ class BreachIngestor:
         return detected_delimiter, columns
 
     def _map_polars_type_to_clickhouse(self, pl_type: Any) -> str:
-        import polars as pl
+
         if pl_type == pl.Date: return "Date"
         if pl_type == pl.Datetime: return "DateTime"
         if pl_type in (pl.Int8, pl.Int16, pl.Int32, pl.Int64): return "Nullable(Int64)"
@@ -131,7 +132,7 @@ class BreachIngestor:
         best_score = -1.0
         best_df = None
         
-        import polars as pl
+
 
         for sep in candidates:
             try:
@@ -210,7 +211,7 @@ class BreachIngestor:
                 
                 # If header is present, we need to get the real column names.
                 # We need to re-parse with has_header=True to get them from the parser
-                import polars as pl
+        
                 if config["has_header"]:
                     df_header = pl.read_csv(
                         io.BytesIO(sample_bytes),
@@ -394,7 +395,7 @@ class BreachIngestor:
                 
                 if config.get("has_header", False):
                     # Trust header names but apply canonical mapping first
-                    mapping = {} # detect_column_mapping(current_cols)
+                    mapping = detect_column_mapping(current_cols)
                     
                     for col_name in current_cols:
                         target_col = mapping.get(col_name, col_name)
@@ -465,7 +466,7 @@ class BreachIngestor:
                             if i < len(current_cols) and target_name != "unknown":
                                 rename_ops[current_cols[i]] = target_name
                     elif config.get("has_header", False):
-                        rename_ops = {} # detect_column_mapping(current_cols)
+                        rename_ops = detect_column_mapping(current_cols)
 
                     if rename_ops:
                         df = df.rename(rename_ops)
@@ -512,8 +513,15 @@ class BreachIngestor:
                     try:
                         arrow_table = final_df.to_arrow()
                         worker_idx = (chunk_idx - 1) % num_workers
-                        write_queues[worker_idx].put(arrow_table)
                         
+                        while True:
+                            try:
+                                write_queues[worker_idx].put(arrow_table, timeout=0.5)
+                                break
+                            except queue.Full:
+                                if writer_error:
+                                    raise writer_error[0]
+
                     except Exception as e:
                         log_error(f"Failed to ingest chunk {chunk_idx}: {e}")
                         q_path = quarantine_dir / f"failed_ingest_{input_path.stem}_{chunk_idx}.parquet"
@@ -712,7 +720,14 @@ class BreachIngestor:
 
                     # Round-robin distribution
                     worker_idx = (chunk_idx - 1) % num_workers
-                    write_queues[worker_idx].put(arrow_table)
+                    
+                    while True:
+                        try:
+                            write_queues[worker_idx].put(arrow_table, timeout=0.5)
+                            break
+                        except queue.Full:
+                            if writer_error:
+                                raise writer_error[0]
 
                 except Exception as e:
                     log_error(f"Failed to convert chunk {chunk_idx}: {e}")
@@ -869,7 +884,7 @@ class BreachIngestor:
         
         for q_file in files:
             try:
-                import polars as pl
+        
                 df = pl.read_parquet(q_file)
                 if df.height == 0:
                     q_file.unlink()
