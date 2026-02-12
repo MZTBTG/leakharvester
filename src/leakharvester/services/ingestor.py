@@ -1,18 +1,18 @@
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple, List, TYPE_CHECKING
+from typing import Dict, Any, Optional, Tuple, List, TYPE_CHECKING, Callable
 import threading
 import queue
 import uuid
 import csv
 import io
 import re
-from rich.prompt import Confirm
 from rich.console import Console
 from rich.panel import Panel
 from leakharvester.ports.repository import BreachRepository
 from leakharvester.ports.file_storage import FileStorage
 from leakharvester.domain.rules import detect_column_mapping
 from leakharvester.domain.schemas import CANONICAL_SCHEMA
+from leakharvester.domain.exceptions import SchemaMismatchError
 from leakharvester.adapters.console import log_info, log_error, log_warning, log_success
 
 if TYPE_CHECKING:
@@ -51,9 +51,9 @@ class BreachIngestor:
             
         return detected_delimiter, normalized_cols
 
-    def _validate_and_sync_schema(self, columns: List[str]) -> bool:
+    def _validate_and_sync_schema(self, columns: List[str], on_schema_mismatch: Optional[Callable[[List[str]], bool]] = None) -> bool:
         """
-        Checks if columns exist in ClickHouse. Prompts user to create missing ones.
+        Checks if columns exist in ClickHouse. Uses callback to confirm addition of missing ones.
         """
         try:
             existing_cols = set(self.repository.get_columns("vault.breach_records"))
@@ -71,7 +71,12 @@ class BreachIngestor:
             return True
 
         log_warning(f"The following columns are missing in the database: {missing_cols}")
-        if Confirm.ask(f"Do you want to add these {len(missing_cols)} columns to the database schema?", default=True):
+        
+        should_add = False
+        if on_schema_mismatch:
+            should_add = on_schema_mismatch(missing_cols)
+        
+        if should_add:
             try:
                 for col in missing_cols:
                     log_info(f"Adding column '{col}'...")
@@ -82,7 +87,7 @@ class BreachIngestor:
                 log_error(f"Failed to update schema: {e}")
                 return False
         else:
-            log_error("Ingestion aborted by user due to schema mismatch.")
+            log_error("Ingestion aborted due to schema mismatch.")
             return False
 
     def _finalize_partition_swap(self, target_table: str, staging_table: str, partition_id: str) -> None:
@@ -212,7 +217,8 @@ class BreachIngestor:
         no_check: bool = False,
         custom_source_name: Optional[str] = None,
         num_workers: int = 1,
-        append: bool = False
+        append: bool = False,
+        on_schema_mismatch: Optional[Callable[[List[str]], bool]] = None
     ) -> None:
         log_info(f"Starting processing of: {input_path} [Format: {format}, NoCheck: {no_check}, Workers: {num_workers}, Append: {append}]")
         
@@ -272,7 +278,7 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                     return
 
             if "columns" in config:
-                if not self._validate_and_sync_schema(config["columns"]):
+                if not self._validate_and_sync_schema(config["columns"], on_schema_mismatch=on_schema_mismatch):
                     if staging_table and not append: self.repository.drop_table(staging_table)
                     return
 
@@ -478,7 +484,7 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
         finally:
             pass
 
-    def process_stream(self, stream: Any, staging_dir: Path, quarantine_dir: Path, batch_size: int, source_name: str = "stdin", format: str = "auto", no_check: bool = False, num_workers: int = 1, append: bool = False) -> None:
+    def process_stream(self, stream: Any, staging_dir: Path, quarantine_dir: Path, batch_size: int, source_name: str = "stdin", format: str = "auto", no_check: bool = False, num_workers: int = 1, append: bool = False, on_schema_mismatch: Optional[Callable[[List[str]], bool]] = None) -> None:
         """
         Ingests data from a stream (stdin/pipe) using the dynamic logic.
         """
@@ -502,7 +508,7 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
         start_time = time.time()
         
         delimiter, columns = self._parse_format_string(format)
-        if not self._validate_and_sync_schema(columns):
+        if not self._validate_and_sync_schema(columns, on_schema_mismatch=on_schema_mismatch):
             if staging_table: self.repository.drop_table(staging_table)
             return
 
