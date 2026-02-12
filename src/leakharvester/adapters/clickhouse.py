@@ -32,7 +32,9 @@ class ClickHouseAdapter(BreachRepository):
                 username=self.username,
                 password=self.password,
                 database=self.database,
-                settings=self.settings
+                settings=self.settings,
+                connect_timeout=30,
+                send_receive_timeout=600
             )
         return self._thread_local.client
 

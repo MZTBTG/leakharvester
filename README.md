@@ -28,7 +28,7 @@ LeakHarvester is built on a Hexagonal Architecture (Ports & Adapters) to separat
     - **Basic dependencies:**
     ```bash
     sudo apt update && \
-    sudo apt install python3-venv git curl apt-transport-https ca-certificates gnupg
+    sudo apt install python3-venv python3-dev git curl apt-transport-https ca-certificates gnupg
     ```
     
     - **Docker config (Example for Debian systems. For other dists, check https://docs.docker.com/engine/install/):**

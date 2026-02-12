@@ -377,8 +377,13 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                         self._push_to_worker(upload_queue, (arrow_table, ingest_table), stop_event, error_container)
                     except Exception as e:
                         log_error(f"Failed to ingest chunk {chunk_idx}: {e}")
-                        q_path = staging_dir.parent / "quarantine" / f"failed_ingest_{input_path.stem}_{chunk_idx}.parquet"
-                        final_df.write_parquet(q_path)
+                        try:
+                            quarantine_dir.mkdir(parents=True, exist_ok=True)
+                            q_path = quarantine_dir / f"failed_ingest_{input_path.stem}_{chunk_idx}.parquet"
+                            final_df.write_parquet(q_path)
+                            log_warning(f"Chunk quarantined to: {q_path}")
+                        except Exception as qe:
+                            log_error(f"Failed to save quarantine file: {qe}")
 
                 if not stop_event.is_set():
                     for _ in range(num_workers):
