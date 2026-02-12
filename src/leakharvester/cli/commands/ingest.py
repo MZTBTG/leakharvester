@@ -2,14 +2,38 @@ import typer
 import sys
 from pathlib import Path
 from rich.prompt import Confirm
+from rich.console import Console
+from rich.panel import Panel
 from leakharvester.config import settings
 from leakharvester.adapters.console import log_info, log_error, log_warning
 from leakharvester.adapters.clickhouse import ClickHouseAdapter
 from leakharvester.adapters.local_fs import LocalFileSystemAdapter
 from leakharvester.services.ingestor import BreachIngestor
+from leakharvester.domain.exceptions import AmbiguousFormatException
 
 def _confirm_schema_update(missing_cols: list[str]) -> bool:
     return Confirm.ask(f"Do you want to add these {len(missing_cols)} columns to the database schema?", default=True)
+
+def _handle_ambiguous_format(e: AmbiguousFormatException):
+    console = Console()
+    config = e.config
+    cols = e.columns
+    input_path = e.input_path
+    fmt_hint = config.get("separator", ":").join(cols)
+    
+    msg = f"""
+[bold yellow]Ambiguous File Structure Detected[/bold yellow]
+Auto-ingestion paused to prevent data corruption.
+
+[bold]Detected Config:[/bold] Sep='{config.get("separator")}' Header={config.get("has_header")}
+[bold]Mapped Columns:[/bold] {cols}
+
+[bold green]Suggested Command:[/bold green]
+leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
+
+[dim]Replace 'unknown' with standard names (username, ip, etc) or 'null'.[/dim]
+    """
+    console.print(Panel(msg, title="Format Suggestion", border_style="yellow"))
 
 def ingest_command(
     file: Path = typer.Option(None, help="Specific file to ingest"),

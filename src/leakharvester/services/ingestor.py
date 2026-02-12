@@ -6,14 +6,12 @@ import uuid
 import csv
 import io
 import re
-from rich.console import Console
-from rich.panel import Panel
 from leakharvester.config import settings
 from leakharvester.ports.repository import BreachRepository
 from leakharvester.ports.file_storage import FileStorage
 from leakharvester.domain.rules import detect_column_mapping
 from leakharvester.domain.schemas import CANONICAL_SCHEMA
-from leakharvester.domain.exceptions import SchemaMismatchError
+from leakharvester.domain.exceptions import SchemaMismatchError, AmbiguousFormatException
 from leakharvester.adapters.console import log_info, log_error, log_warning, log_success
 
 if TYPE_CHECKING:
@@ -215,7 +213,7 @@ class BreachIngestor:
         quarantine_dir: Path,
         batch_size: int = 500_000,
         format: str = "auto",
-        no_check: bool = False,
+        skip_email_validation: bool = False,
         custom_source_name: Optional[str] = None,
         num_workers: int = 1,
         append: bool = False,
@@ -258,25 +256,8 @@ class BreachIngestor:
                 is_ambiguous = not cols or ("unknown" in cols and not has_essentials) or (len(cols) > 2 and not has_essentials)
 
                 if is_ambiguous:
-                    console = Console()
-                    fmt_hint = config.get("separator", ":").join(cols)
-                    
-                    msg = f"""
-[bold yellow]Ambiguous File Structure Detected[/bold yellow]
-Auto-ingestion paused to prevent data corruption.
-
-[bold]Detected Config:[/bold] Sep='{config.get("separator")}' Header={config.get("has_header")}
-[bold]Mapped Columns:[/bold] {cols}
-
-[bold green]Suggested Command:[/bold green]
-leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
-
-[dim]Replace 'unknown' with standard names (username, ip, etc) or 'null'.[/dim]
-                    """
-                    console.print(Panel(msg, title="Format Suggestion", border_style="yellow"))
-                    
                     if staging_table and not append: self.repository.drop_table(staging_table)
-                    return
+                    raise AmbiguousFormatException(config, cols, str(input_path))
 
             if "columns" in config:
                 if not self._validate_and_sync_schema(config["columns"], on_schema_mismatch=on_schema_mismatch):
@@ -754,7 +735,7 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                 try:
                     import pyarrow as pa
                     table = pa.Table.from_batches([batch])
-                    self._push_to_worker(upload_queue, (table, "breach_records"), stop_event, error_container)
+                    self._push_to_worker(upload_queue, (table, settings.BREACH_TABLE), stop_event, error_container)
                 except Exception as e:
                     log_error(f"Failed to process parquet batch: {e}")
                     raise e
@@ -818,7 +799,7 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                     valid_df = valid_df.select(CANONICAL_SCHEMA.names())
                     
                     table = valid_df.to_arrow()
-                    self.repository.insert_arrow_batch(table, "breach_records")
+                    self.repository.insert_arrow_batch(table, settings.BREACH_TABLE)
                     
                     total_recovered += valid_df.height
                     log_info(f"Recovered {valid_df.height} lines from {q_file.name}")
