@@ -74,18 +74,21 @@ def ingest_command(
         return
 
     if file:
-        ingestor.process_file(
-            file, 
-            settings.STAGING_DIR, 
-            settings.QUARANTINE_DIR, 
-            batch_size=final_batch_size, 
-            format=format, 
-            skip_email_validation=skip_email_validation, 
-            custom_source_name=source_name,
-            num_workers=workers,
-            append=append,
-            on_schema_mismatch=_confirm_schema_update
-        )
+        try:
+            ingestor.process_file(
+                file, 
+                settings.STAGING_DIR, 
+                settings.QUARANTINE_DIR, 
+                batch_size=final_batch_size, 
+                format=format, 
+                skip_email_validation=skip_email_validation, 
+                custom_source_name=source_name,
+                num_workers=workers,
+                append=append,
+                on_schema_mismatch=_confirm_schema_update
+            )
+        except AmbiguousFormatException as e:
+            _handle_ambiguous_format(e)
     else:
         files = list(settings.RAW_DIR.glob("*"))
         if not files:
@@ -94,15 +97,18 @@ def ingest_command(
 
         for f in files:
             if f.is_file():
-                ingestor.process_file(
-                    f, 
-                    settings.STAGING_DIR, 
-                    settings.QUARANTINE_DIR, 
-                    batch_size=final_batch_size, 
-                    format=format, 
-                    skip_email_validation=skip_email_validation, 
-                    custom_source_name=source_name,
-                    num_workers=workers,
-                    append=append,
-                    on_schema_mismatch=_confirm_schema_update
-                )
+                try:
+                    ingestor.process_file(
+                        f, 
+                        settings.STAGING_DIR, 
+                        settings.QUARANTINE_DIR, 
+                        batch_size=final_batch_size, 
+                        format=format, 
+                        skip_email_validation=skip_email_validation, 
+                        custom_source_name=source_name,
+                        num_workers=workers,
+                        append=append,
+                        on_schema_mismatch=_confirm_schema_update
+                    )
+                except AmbiguousFormatException as e:
+                    _handle_ambiguous_format(e)
