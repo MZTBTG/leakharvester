@@ -182,3 +182,7 @@ class ClickHouseAdapter(BreachRepository):
         if hasattr(self._thread_local, 'client'):
             self._thread_local.client.close()
             del self._thread_local.client
+
+    def reset_connection(self) -> None:
+        """Forces the thread-local client to reconnect on next access."""
+        self.close()

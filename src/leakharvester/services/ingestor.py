@@ -510,6 +510,13 @@ class BreachIngestor:
 
                     except Exception as e:
                         log_error(f"Failed to ingest chunk {chunk_idx}: {e}")
+                        
+                        # Critical check: If the error came from a worker, stop everything.
+                        if error_container and str(error_container[0]) in str(e):
+                             log_error("Critical worker failure detected. Aborting ingestion.")
+                             stop_event.set()
+                             break
+
                         try:
                             quarantine_dir.mkdir(parents=True, exist_ok=True)
                             q_path = quarantine_dir / f"failed_ingest_{input_path.stem}_{chunk_idx}.parquet"
@@ -762,6 +769,7 @@ class BreachIngestor:
 
     def _ingestion_worker(self, q: queue.Queue, error_event: threading.Event, error_container: list) -> None:
         """Background worker to consume Arrow tables and insert into ClickHouse."""
+        import time
         try:
             while True:
                 try:
@@ -775,16 +783,32 @@ class BreachIngestor:
                     q.task_done()
                     break
                 
-                try:
-                    table, table_name = item
-                    self.repository.insert_arrow_batch(table, table_name)
-                except Exception as e:
-                    log_error(f"Worker Upload Failed: {e}")
-                    if not error_container:
-                        error_container.append(e)
-                    error_event.set()
-                finally:
-                    q.task_done()
+                table, table_name = item
+                retries = 3
+                for attempt in range(retries):
+                    try:
+                        self.repository.insert_arrow_batch(table, table_name)
+                        break
+                    except Exception as e:
+                        is_network_error = "Broken pipe" in str(e) or "Connection reset" in str(e)
+                        if is_network_error and attempt < retries - 1:
+                            sleep_time = 2 ** attempt
+                            log_warning(f"Worker upload failed (attempt {attempt+1}/{retries}). Retrying in {sleep_time}s... Error: {e}")
+                            time.sleep(sleep_time)
+                            # Force reset client connection if possible
+                            if hasattr(self.repository, "reset_connection"):
+                                self.repository.reset_connection()
+                        else:
+                            log_error(f"Worker Upload Failed after {attempt+1} attempts: {e}")
+                            if not error_container:
+                                error_container.append(e)
+                            error_event.set()
+                            q.task_done() # Mark as done so we don't block join? No, wait.
+                            # If we failed, we should probably stop consuming or break.
+                            # But we need to ensure task_done is called for the current item.
+                            # The outer finally block handles task_done.
+                            raise e 
+                q.task_done()
                 
                 if error_event.is_set():
                     try:
