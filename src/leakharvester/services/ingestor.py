@@ -396,7 +396,8 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                                 q_path = quarantine_dir / f"quarantine_{source_label}_{chunk_idx}.parquet"
                                 try:
                                     bad_df.write_parquet(q_path, compression="zstd")
-                                except Exception: pass
+                                except Exception as e:
+                                    log_error(f"Failed to write to quarantine {q_path}: {e}")
                             
                             df = df.filter(pl.col("email").str.contains(validation_pattern))
 
@@ -594,7 +595,8 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                              q_path = quarantine_dir / f"quarantine_{source_name}_{chunk_idx}.parquet"
                              try:
                                  bad_df.select(["raw_line"]).write_parquet(q_path, compression="zstd")
-                             except Exception: pass
+                             except Exception as e:
+                                 log_error(f"Failed to write to quarantine {q_path}: {e}")
                         
                         df = df.filter(pl.col("email").str.contains(validation_pattern))
 
