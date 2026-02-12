@@ -39,7 +39,7 @@ def ingest_command(
     file: Path = typer.Option(None, help="Specific file to ingest"),
     stdin: bool = typer.Option(False, "--stdin", help="Ingest from standard input (pipe)."),
     source_name: str = typer.Option(None, "--source-name", help="Custom name for the data source."),
-    format: str = typer.Option("auto", help="Input format. Use 'auto' for detection. Specify 'col1:col2' (e.g. 'email:password') to skip detection (Faster startup)."),
+    format: str = typer.Option("auto", help="Specify column schema (e.g. 'email:password') or use 'auto' for auto-detection."),
     skip_email_validation: bool = typer.Option(False, "--unsafe", help="Disable email validation in Fast Path (Dangerous but Fastest)."),
     batch_size: int = typer.Option(None, help="Batch size (rows) per chunk. Defaults to config (1M)."),
     watch: bool = typer.Option(False, help="Watch raw directory for new files."),
