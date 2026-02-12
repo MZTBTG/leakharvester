@@ -388,7 +388,7 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                     if "email" in df.columns:
                         df = df.filter(pl.col("email").is_not_null() & (pl.col("email") != ""))
                         
-                        if not no_check:
+                        if not skip_email_validation:
                             validation_pattern = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
                             bad_df = df.filter(~pl.col("email").str.contains(validation_pattern))
                             
@@ -484,7 +484,7 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
         finally:
             pass
 
-    def process_stream(self, stream: Any, staging_dir: Path, quarantine_dir: Path, batch_size: int, source_name: str = "stdin", format: str = "auto", no_check: bool = False, num_workers: int = 1, append: bool = False, on_schema_mismatch: Optional[Callable[[List[str]], bool]] = None) -> None:
+    def process_stream(self, stream: Any, staging_dir: Path, quarantine_dir: Path, batch_size: int, source_name: str = "stdin", format: str = "auto", skip_email_validation: bool = False, num_workers: int = 1, append: bool = False, on_schema_mismatch: Optional[Callable[[List[str]], bool]] = None) -> None:
         """
         Ingests data from a stream (stdin/pipe) using the dynamic logic.
         """
@@ -586,7 +586,7 @@ leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
                 if "email" in columns:
                      df = df.filter(pl.col("email").is_not_null() & (pl.col("email") != ""))
                      
-                     if not no_check:
+                     if not skip_email_validation:
                         validation_pattern = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
                         bad_df = df.filter(~pl.col("email").str.contains(validation_pattern))
                         
