@@ -6,17 +6,17 @@ import uuid
 import csv
 import io
 import re
+import cchardet
 from leakharvester.config import settings
 from leakharvester.ports.repository import BreachRepository
 from leakharvester.ports.file_storage import FileStorage
-from leakharvester.domain.rules import detect_column_mapping
 from leakharvester.domain.schemas import CANONICAL_SCHEMA
 from leakharvester.domain.exceptions import SchemaMismatchError, AmbiguousFormatException
 from leakharvester.adapters.console import log_info, log_error, log_warning, log_success
 
-if TYPE_CHECKING:
-    import polars as pl
-    import pyarrow as pa
+import polars as pl
+import pyarrow as pa
+
 
 class BreachIngestor:
     def __init__(self, repository: BreachRepository, file_storage: FileStorage):
@@ -26,7 +26,7 @@ class BreachIngestor:
     def _parse_format_string(self, format_str: str) -> Tuple[str, List[str]]:
         """
         Parses the format string to determine delimiter and column names.
-        Example: 'email:pass:doc' -> (':', ['email', 'password', 'document'])
+        Example: 'email:pass:doc' -> (':', ['email', 'pass', 'doc'])
         """
         if format_str == "auto" or format_str == "email:pass":
              return ":", ["email", "password"]
@@ -42,17 +42,22 @@ class BreachIngestor:
             
         columns = [c.strip() for c in format_str.split(detected_delimiter)]
         
-        normalized_cols = []
-        for c in columns:
-            if c == "pass": normalized_cols.append("password")
-            elif c == "user": normalized_cols.append("username")
-            else: normalized_cols.append(c)
-            
-        return detected_delimiter, normalized_cols
+        # Removed magic normalization to respect user input
+        return detected_delimiter, columns
 
-    def _validate_and_sync_schema(self, columns: List[str], on_schema_mismatch: Optional[Callable[[List[str]], bool]] = None) -> bool:
+    def _map_polars_type_to_clickhouse(self, pl_type: Any) -> str:
+        import polars as pl
+        if pl_type == pl.Date: return "Date"
+        if pl_type == pl.Datetime: return "DateTime"
+        if pl_type in (pl.Int8, pl.Int16, pl.Int32, pl.Int64): return "Nullable(Int64)"
+        if pl_type in (pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64): return "Nullable(UInt64)"
+        if pl_type in (pl.Float32, pl.Float64): return "Nullable(Float64)"
+        return "String"
+
+    def _validate_and_sync_schema(self, columns_schema: Dict[str, str], on_schema_mismatch: Optional[Callable[[List[str]], bool]] = None) -> bool:
         """
         Checks if columns exist in ClickHouse. Uses callback to confirm addition of missing ones.
+        columns_schema: Dict mapping column name to ClickHouse type (e.g., {"age": "Nullable(Int64)"}).
         """
         try:
             existing_cols = set(self.repository.get_columns(settings.BREACH_TABLE))
@@ -61,7 +66,7 @@ class BreachIngestor:
             return False
 
         missing_cols = []
-        for col in columns:
+        for col in columns_schema.keys():
             if col == "null" or col == "unknown": continue
             if col not in existing_cols:
                 missing_cols.append(col)
@@ -78,8 +83,9 @@ class BreachIngestor:
         if should_add:
             try:
                 for col in missing_cols:
-                    log_info(f"Adding column '{col}'...")
-                    self.repository.add_column(settings.BREACH_TABLE, col)
+                    col_type = columns_schema.get(col, "String")
+                    log_info(f"Adding column '{col}' type '{col_type}'...")
+                    self.repository.add_column(settings.BREACH_TABLE, col, col_type)
                 log_success("Schema updated successfully.")
                 return True
             except Exception as e:
@@ -103,19 +109,67 @@ class BreachIngestor:
 
     def _detect_encoding(self, path: Path) -> str:
         """
-        Detects file encoding by trying to read the first block.
-        Prioritizes UTF-8, falls back to Latin-1.
+        Detects file encoding using cchardet.
         """
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                f.read(8192)
+            with open(path, "rb") as f:
+                raw = f.read(32768)
+                if not raw: return "utf-8"
+                result = cchardet.detect(raw)
+                return result["encoding"] or "utf-8"
+        except Exception as e:
+            log_warning(f"Encoding detection failed, defaulting to utf-8: {e}")
             return "utf-8"
-        except UnicodeDecodeError:
-            return "latin-1"
+
+    def _detect_separator_competition(self, sample_bytes: bytes, encoding: str) -> Tuple[str, Any]:
+        """
+        Competes multiple separators against the sample to find the best fit using Polars.
+        Returns (best_separator, sample_dataframe).
+        """
+        candidates = [",", ";", "|", ":", "\t"]
+        best_sep = ","
+        best_score = -1.0
+        best_df = None
+        
+        import polars as pl
+
+        for sep in candidates:
+            try:
+                df = pl.read_csv(
+                    io.BytesIO(sample_bytes),
+                    separator=sep,
+                    has_header=False,
+                    n_rows=50,
+                    ignore_errors=True,
+                    encoding=encoding,
+                    truncate_ragged_lines=True,
+                    infer_schema_length=0
+                )
+                
+                if df.width <= 1: 
+                    continue
+
+                null_counts_row = df.null_count().row(0)
+                null_count = sum(null_counts_row)
+                total_cells = df.height * df.width
+                if total_cells == 0: continue
+                
+                null_ratio = null_count / total_cells
+                
+                score = df.width * (1.0 - null_ratio)
+                
+                if score > best_score:
+                    best_score = score
+                    best_sep = sep
+                    best_df = df
+            except Exception:
+                continue
+                
+        return best_sep, best_df
 
     def _analyze_and_suggest_format(self, input_path: Path) -> Dict[str, Any]:
         """
-        Robustly detects CSV format using python's csv.Sniffer and encoding checks.
+        Robustly detects CSV format using "Competition" strategy.
         Returns a configuration dictionary for Polars parser.
         """
         config = {
@@ -130,75 +184,77 @@ class BreachIngestor:
             encoding = self._detect_encoding(input_path)
             config["encoding"] = encoding
 
-            sample = ""
-            with open(input_path, "r", encoding=encoding, newline='') as f:
-                for _ in range(10):
-                    line = f.readline()
-                    if not line: break
-                    sample += line
+            with open(input_path, "rb") as f:
+                sample_bytes = f.read(65536)
 
-            if not sample: 
+            if not sample_bytes: 
                 return config
 
-            sniffer = csv.Sniffer()
-            try:
-                dialect = sniffer.sniff(sample, delimiters=[',', ';', ':', '|', '\t'])
-                config["separator"] = dialect.delimiter
-                config["quote_char"] = dialect.quotechar
-                config["has_header"] = sniffer.has_header(sample)
-            except csv.Error:
-                if ":" in sample: config["separator"] = ":"
-                elif ";" in sample: config["separator"] = ";"
+            separator, best_df = self._detect_separator_competition(sample_bytes, encoding)
+            
+            if separator:
+                config["separator"] = separator
+            
+            if best_df is None:
+                return config
 
             try:
-                sample_io = io.StringIO(sample)
+                first_row = best_df.row(0)
+                first_row_str = [str(v).lower() for v in first_row if v is not None]
+                
+                header_keywords = {"email", "mail", "e-mail", "password", "pass", "pwd", "user", "username", "login", "ip", "url", "site"}
+                intersection = set(first_row_str) & header_keywords
+                
+                if intersection:
+                    config["has_header"] = True
+                
+                # If header is present, we need to get the real column names.
+                # We need to re-parse with has_header=True to get them from the parser
                 import polars as pl
-                df = pl.read_csv(
-                    sample_io, 
-                    separator=config["separator"],
-                    quote_char=config["quote_char"],
-                    has_header=config["has_header"],
-                    n_rows=10,
-                    ignore_errors=True
-                )
-                
-                col_types = []
-                email_regex = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
-                
-                for col_name in df.columns:
-                    col_data = df[col_name].cast(pl.String)
+                if config["has_header"]:
+                    df_header = pl.read_csv(
+                        io.BytesIO(sample_bytes),
+                        separator=config["separator"],
+                        has_header=True,
+                        n_rows=10,
+                        ignore_errors=True,
+                        encoding=encoding,
+                        truncate_ragged_lines=True
+                    )
+                    config["columns"] = df_header.columns
+                else:
+                    # No header, try to identify content columns
+                    # We use best_df (which has generic headers column_1, etc)
+                    # We infer based on content regex
+                    col_types = []
+                    email_regex = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
                     
-                    if config["has_header"]:
-                        c_lower = col_name.lower()
-                        if "email" in c_lower or "mail" in c_lower:
+                    for col_idx in range(best_df.width):
+                        col_data = best_df.select(pl.col(best_df.columns[col_idx]).cast(pl.String)).to_series()
+                        
+                        match_count = 0
+                        valid_rows = 0
+                        for val in col_data:
+                            if not val: continue
+                            valid_rows += 1
+                            if email_regex.search(val):
+                                match_count += 1
+                        
+                        if valid_rows > 0 and (match_count / valid_rows) > 0.5:
                             col_types.append("email")
-                            continue
-                        if "pass" in c_lower or "pwd" in c_lower:
-                            col_types.append("password")
-                            continue
+                        else:
+                            col_types.append("unknown")
                     
-                    match_count = 0
-                    valid_rows = 0
-                    for val in col_data:
-                        if not val: continue
-                        valid_rows += 1
-                        if email_regex.search(val):
-                            match_count += 1
+                    # Heuristic for password: if 2 cols and one is email
+                    if "email" in col_types and "password" not in col_types:
+                        if len(col_types) == 2:
+                            idx = col_types.index("email")
+                            col_types[1-idx] = "password"
                     
-                    if valid_rows > 0 and (match_count / valid_rows) > 0.5:
-                        col_types.append("email")
-                    else:
-                        col_types.append("unknown")
-                
-                if "email" in col_types and "password" not in col_types:
-                    if len(col_types) == 2:
-                        idx = col_types.index("email")
-                        col_types[1-idx] = "password"
-                
-                config["columns"] = col_types
+                    config["columns"] = col_types
 
-            except Exception:
-                pass
+            except Exception as e:
+                log_warning(f"Header analysis failed: {e}")
 
             return config
 
@@ -251,7 +307,16 @@ class BreachIngestor:
                 
                 cols = config.get("columns", [])
                 log_info(f"Detected Config: {config}")
-                has_essentials = "email" in cols and "password" in cols
+                
+                # Check for ambiguity
+                # Apply mapping rules to see if we found essentials (e.g. 'E-Mail' -> 'email')
+                has_essentials = False
+                if config.get("has_header", False):
+                    mapping = detect_column_mapping(cols)
+                    mapped_values = list(mapping.values())
+                    has_essentials = "email" in mapped_values and "password" in mapped_values
+                else:
+                    has_essentials = "email" in cols and "password" in cols
                 
                 is_ambiguous = not cols or ("unknown" in cols and not has_essentials) or (len(cols) > 2 and not has_essentials)
 
@@ -259,35 +324,7 @@ class BreachIngestor:
                     if staging_table and not append: self.repository.drop_table(staging_table)
                     raise AmbiguousFormatException(config, cols, str(input_path))
 
-            if "columns" in config:
-                if not self._validate_and_sync_schema(config["columns"], on_schema_mismatch=on_schema_mismatch):
-                    if staging_table and not append: self.repository.drop_table(staging_table)
-                    return
-
-            try:
-                valid_db_cols = set(self.repository.get_columns(target_table))
-            except Exception as e:
-                log_error(f"Failed to fetch schema: {e}")
-                if staging_table and not append: self.repository.drop_table(staging_table)
-                return
-
-            detected_cols = [c for c in config.get("columns", []) if c not in ("unknown", "null")]
-            potential_cols = ["source_file"] + detected_cols
-            # Deduplicate preserving order
-            seen = set()
-            potential_cols = [x for x in potential_cols if not (x in seen or seen.add(x))]
-            
-            target_cols = [c for c in potential_cols if c in valid_db_cols]
-            
-            if not target_cols:
-                log_error("No valid columns found to ingest.")
-                if staging_table and not append: self.repository.drop_table(staging_table)
-                return
-
-            # Refactored for High-Performance Arrow Stream (Subprocess) with Pipelining & Fan-Out
-            log_info(f"Starting Native Arrow Stream to {ingest_table} with {num_workers} workers...")
-            
-            # State for multi-worker
+            # Setup Worker State
             procs = []
             write_queues = []
             writer_threads = []
@@ -326,8 +363,7 @@ class BreachIngestor:
                     except (OSError, ValueError): pass
 
             try:
-                import polars as pl
-                import pyarrow as pa
+
                 
                 chunk_idx = 0
                 reader = pl.read_csv_batched(
@@ -342,17 +378,84 @@ class BreachIngestor:
                     infer_schema_length=1000
                 )
                 
+                # Read first batch to infer schema
+                batches = reader.next_batches(1)
+                if not batches:
+                    log_warning("File is empty or no data found.")
+                    if staging_table and not append: self.repository.drop_table(staging_table)
+                    return
+
+                first_batch = batches[0]
+                
+                # Dynamic Schema Inference & Sync
+                schema_map = {}
+                detected_cols = config.get("columns", [])
+                current_cols = first_batch.columns
+                
+                if config.get("has_header", False):
+                    # Trust header names but apply canonical mapping first
+                    mapping = {} # detect_column_mapping(current_cols)
+                    
+                    for col_name in current_cols:
+                        target_col = mapping.get(col_name, col_name)
+                        schema_map[target_col] = self._map_polars_type_to_clickhouse(first_batch.schema[col_name])
+                else:
+                    # Map positional columns if defined in config
+                    for i, target_name in enumerate(detected_cols):
+                        if i < len(current_cols) and target_name != "unknown":
+                            col_name_in_df = current_cols[i]
+                            schema_map[target_name] = self._map_polars_type_to_clickhouse(first_batch.schema[col_name_in_df])
+
+                if not self._validate_and_sync_schema(schema_map, on_schema_mismatch=on_schema_mismatch):
+                    if staging_table and not append: self.repository.drop_table(staging_table)
+                    return
+
+                try:
+                    valid_db_cols = set(self.repository.get_columns(target_table))
+                except Exception as e:
+                    log_error(f"Failed to fetch schema: {e}")
+                    if staging_table and not append: self.repository.drop_table(staging_table)
+                    return
+                
+                # Determine Potential Columns
+                potential_cols = ["source_file"] + list(schema_map.keys())
+                # Deduplicate
+                seen = set()
+                potential_cols = [x for x in potential_cols if not (x in seen or seen.add(x))]
+                target_cols = [c for c in potential_cols if c in valid_db_cols]
+                
+                if not target_cols:
+                    log_error("No valid columns found to ingest.")
+                    if staging_table and not append: self.repository.drop_table(staging_table)
+                    return
+
+                log_info(f"Starting Native Arrow Stream to {ingest_table} with {num_workers} workers...")
+                
+                # Start Workers
+                for i in range(num_workers):
+                    p = self.repository.get_arrow_stream_process(ingest_table, columns=target_cols)
+                    procs.append(p)
+                    q = queue.Queue(maxsize=3)
+                    write_queues.append(q)
+                    t = threading.Thread(target=_stream_writer, args=(i, p, q), daemon=True)
+                    t.start()
+                    writer_threads.append(t)
+
+                pending_batches = [first_batch]
+                
                 while True:
                     if writer_error:
                         break
                     
-                    batches = reader.next_batches(1)
-                    if not batches:
-                        break
+                    if not pending_batches:
+                        pending_batches = reader.next_batches(1)
+                        if not pending_batches:
+                            break
                     
-                    df = batches[0]
+                    df = pending_batches.pop(0)
                     chunk_idx += 1
                     
+                    # Rename Logic
                     detected_cols = config.get("columns", [])
                     current_cols = df.columns
                     rename_ops = {}
@@ -362,7 +465,7 @@ class BreachIngestor:
                             if i < len(current_cols) and target_name != "unknown":
                                 rename_ops[current_cols[i]] = target_name
                     elif config.get("has_header", False):
-                        rename_ops = detect_column_mapping(current_cols)
+                        rename_ops = {} # detect_column_mapping(current_cols)
 
                     if rename_ops:
                         df = df.rename(rename_ops)
@@ -395,7 +498,11 @@ class BreachIngestor:
                     missing_exprs = []
                     for tc in target_cols:
                         if tc not in current_set:
-                            missing_exprs.append(pl.lit("").alias(tc))
+                            # Use proper nulls for type
+                            # If column exists in DB but not DF, fill with null/empty
+                            # Check schema map for type? Defaults to string/null.
+                            # Polars lit(None) defaults to null.
+                            missing_exprs.append(pl.lit(None).alias(tc))
                     
                     if missing_exprs:
                         df = df.with_columns(missing_exprs)
@@ -404,17 +511,6 @@ class BreachIngestor:
 
                     try:
                         arrow_table = final_df.to_arrow()
-                        
-                        if not procs:
-                            for i in range(num_workers):
-                                p = self.repository.get_arrow_stream_process(ingest_table, columns=target_cols)
-                                procs.append(p)
-                                q = queue.Queue(maxsize=3)
-                                write_queues.append(q)
-                                t = threading.Thread(target=_stream_writer, args=(i, p, q), daemon=True)
-                                t.start()
-                                writer_threads.append(t)
-
                         worker_idx = (chunk_idx - 1) % num_workers
                         write_queues[worker_idx].put(arrow_table)
                         
@@ -537,8 +633,7 @@ class BreachIngestor:
                 except (OSError, ValueError): pass
         
         try:
-            import polars as pl
-            import pyarrow as pa
+
             
             for df in self.file_storage.read_stream_batched(stream, batch_size=batch_size):
                 if writer_error:
@@ -733,7 +828,6 @@ class BreachIngestor:
                     break
                 
                 try:
-                    import pyarrow as pa
                     table = pa.Table.from_batches([batch])
                     self._push_to_worker(upload_queue, (table, settings.BREACH_TABLE), stop_event, error_container)
                 except Exception as e:
