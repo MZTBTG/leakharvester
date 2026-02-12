@@ -102,6 +102,11 @@ class ClickHouseAdapter(BreachRepository):
     def get_arrow_stream_process(self, table_name: str, columns: list[str] = None):
         """Returns a subprocess.Popen object for streaming Arrow data to ClickHouse."""
         import subprocess
+        import shutil
+
+        if not shutil.which("clickhouse-client"):
+             raise RuntimeError("The 'clickhouse-client' binary is not found in PATH. Please install ClickHouse client tools.")
+
         native_port = 9000
         
         query = f"INSERT INTO {table_name} FORMAT ArrowStream"
