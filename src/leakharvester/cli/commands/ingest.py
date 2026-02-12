@@ -1,21 +1,49 @@
 import typer
 import sys
 from pathlib import Path
+from rich.prompt import Confirm
+from rich.console import Console
+from rich.panel import Panel
 from leakharvester.config import settings
 from leakharvester.adapters.console import log_info, log_error, log_warning
 from leakharvester.adapters.clickhouse import ClickHouseAdapter
 from leakharvester.adapters.local_fs import LocalFileSystemAdapter
 from leakharvester.services.ingestor import BreachIngestor
+from leakharvester.domain.exceptions import AmbiguousFormatException
+
+def _confirm_schema_update(missing_cols: list[str]) -> bool:
+    return Confirm.ask(f"Do you want to add these {len(missing_cols)} columns to the database schema?", default=True)
+
+def _handle_ambiguous_format(e: AmbiguousFormatException):
+    console = Console()
+    config = e.config
+    cols = e.columns
+    input_path = e.input_path
+    fmt_hint = config.get("separator", ":").join(cols)
+    
+    msg = f"""
+[bold yellow]Ambiguous File Structure Detected[/bold yellow]
+Auto-ingestion paused to prevent data corruption.
+
+[bold]Detected Config:[/bold] Sep='{config.get("separator")}' Header={config.get("has_header")}
+[bold]Mapped Columns:[/bold] {cols}
+
+[bold green]Suggested Command:[/bold green]
+leakharvester ingest --file "{input_path}" --format "{fmt_hint}"
+
+[dim]Replace 'unknown' with standard names (username, ip, etc) or 'null'.[/dim]
+    """
+    console.print(Panel(msg, title="Format Suggestion", border_style="yellow"))
 
 def ingest_command(
     file: Path = typer.Option(None, help="Specific file to ingest"),
     stdin: bool = typer.Option(False, "--stdin", help="Ingest from standard input (pipe)."),
     source_name: str = typer.Option(None, "--source-name", help="Custom name for the data source."),
     format: str = typer.Option("auto", help="Input format. Use 'auto' for detection. Specify 'col1:col2' (e.g. 'email:password') to skip detection (Faster startup)."),
-    no_check: bool = typer.Option(False, "--unsafe", help="Disable email validation in Fast Path (Dangerous but Fastest)."),
-    batch_size: int = typer.Option(None, help="Batch size (rows) per chunk. Defaults to config (50K)."),
+    skip_email_validation: bool = typer.Option(False, "--unsafe", help="Disable email validation in Fast Path (Dangerous but Fastest)."),
+    batch_size: int = typer.Option(None, help="Batch size (rows) per chunk. Defaults to config (1M)."),
     watch: bool = typer.Option(False, help="Watch raw directory for new files."),
-    workers: int = typer.Option(1, "--workers", "-w", help="Number of concurrent upload workers. Defaults to 1."),
+    workers: int = typer.Option(4, "--workers", "-w", help="Number of concurrent upload workers. Defaults to 4."),
     append: bool = typer.Option(False, "--append", help="Append data to existing source file instead of overwriting.")
 ):
     """Ingests data from raw directory, specific file, or stdin pipe."""
@@ -38,24 +66,29 @@ def ingest_command(
             batch_size=final_batch_size, 
             source_name=final_source_name, 
             format=format, 
-            no_check=no_check,
+            skip_email_validation=skip_email_validation,
             num_workers=workers,
-            append=append
+            append=append,
+            on_schema_mismatch=_confirm_schema_update
         )
         return
 
     if file:
-        ingestor.process_file(
-            file, 
-            settings.STAGING_DIR, 
-            settings.QUARANTINE_DIR, 
-            batch_size=final_batch_size, 
-            format=format, 
-            no_check=no_check, 
-            custom_source_name=source_name,
-            num_workers=workers,
-            append=append
-        )
+        try:
+            ingestor.process_file(
+                file, 
+                settings.STAGING_DIR, 
+                settings.QUARANTINE_DIR, 
+                batch_size=final_batch_size, 
+                format=format, 
+                skip_email_validation=skip_email_validation, 
+                custom_source_name=source_name,
+                num_workers=workers,
+                append=append,
+                on_schema_mismatch=_confirm_schema_update
+            )
+        except AmbiguousFormatException as e:
+            _handle_ambiguous_format(e)
     else:
         files = list(settings.RAW_DIR.glob("*"))
         if not files:
@@ -64,14 +97,18 @@ def ingest_command(
 
         for f in files:
             if f.is_file():
-                ingestor.process_file(
-                    f, 
-                    settings.STAGING_DIR, 
-                    settings.QUARANTINE_DIR, 
-                    batch_size=final_batch_size, 
-                    format=format, 
-                    no_check=no_check, 
-                    custom_source_name=source_name,
-                    num_workers=workers,
-                    append=append
-                )
+                try:
+                    ingestor.process_file(
+                        f, 
+                        settings.STAGING_DIR, 
+                        settings.QUARANTINE_DIR, 
+                        batch_size=final_batch_size, 
+                        format=format, 
+                        skip_email_validation=skip_email_validation, 
+                        custom_source_name=source_name,
+                        num_workers=workers,
+                        append=append,
+                        on_schema_mismatch=_confirm_schema_update
+                    )
+                except AmbiguousFormatException as e:
+                    _handle_ambiguous_format(e)

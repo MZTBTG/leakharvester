@@ -15,8 +15,9 @@ class Settings(BaseSettings):
     CLICKHOUSE_USER: str = "leakharvester"
     CLICKHOUSE_PASSWORD: str = "secret_password"
     CLICKHOUSE_DB: str = "vault"
+    BREACH_TABLE: str = "vault.breach_records"
     
-    BATCH_SIZE: int = 50_000
+    BATCH_SIZE: int = 1_000_000
     
     model_config = SettingsConfigDict(
         env_file=".env", 

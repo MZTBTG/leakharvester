@@ -1,9 +1,44 @@
 import pytest
 import polars as pl
 import pyarrow as pa
+import io
 from pathlib import Path
 from leakharvester.services.ingestor import BreachIngestor
 from leakharvester.adapters.local_fs import LocalFileSystemAdapter
+
+class MockStdin(io.BytesIO):
+    def close(self):
+        pass
+
+class MockProcess:
+    def __init__(self, repo, table_name):
+        self.mock_stdin = MockStdin()
+        self.stdin = self.mock_stdin
+        self.repo = repo
+        self.table_name = table_name
+        self.returncode = 0
+        self.fail_on_communicate = False
+
+    def communicate(self):
+        if self.fail_on_communicate:
+             return (b"", b"Simulated Error")
+             
+        self.mock_stdin.seek(0)
+        try:
+            reader = pa.ipc.open_stream(self.mock_stdin)
+            while True:
+                try:
+                    batch = reader.read_next_batch()
+                    table = pa.Table.from_batches([batch])
+                    self.repo.batches.append((table, self.table_name))
+                except StopIteration:
+                    break
+        except Exception:
+            pass
+        return (b"", b"")
+
+    def kill(self):
+        pass
 
 class MockRepository:
     def __init__(self):
@@ -34,6 +69,9 @@ class MockRepository:
     
     def add_column(self, table_name: str, column_name: str) -> None:
         self.columns.append(column_name)
+
+    def get_arrow_stream_process(self, table_name: str, columns: list[str]) -> "MockProcess":
+        return MockProcess(self, table_name)
 
 def test_custom_source_name(temp_dirs):
     raw, staging, quarantine = temp_dirs
@@ -167,8 +205,11 @@ def test_ingest_cleanup_on_error(temp_dirs):
     
     # Simulate error during processing by mocking repository to fail on insert
     class FailingRepo(MockRepository):
-        def insert_arrow_batch(self, table, name):
-            raise RuntimeError("Database connection lost")
+        def get_arrow_stream_process(self, table_name, columns):
+            p = MockProcess(self, table_name)
+            p.returncode = 1
+            p.fail_on_communicate = True
+            return p
     
     failing_repo = FailingRepo()
     ingestor = BreachIngestor(failing_repo, fs)
