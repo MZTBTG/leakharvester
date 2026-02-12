@@ -512,8 +512,8 @@ class BreachIngestor:
                         log_error(f"Failed to ingest chunk {chunk_idx}: {e}")
                         
                         # Critical check: If the error came from a worker, stop everything.
-                        if error_container and str(error_container[0]) in str(e):
-                             log_error("Critical worker failure detected. Aborting ingestion.")
+                        if writer_error:
+                             log_error(f"Critical worker failure detected: {writer_error[0]}. Aborting ingestion.")
                              stop_event.set()
                              break
 
@@ -565,7 +565,6 @@ class BreachIngestor:
             log_error(f"Error during processing of {input_path}: {e}")
             stop_event.set()
             if staging_table: self.repository.drop_table(staging_table)
-            self._move_to_quarantine(input_path, quarantine_dir)
         finally:
             pass
 

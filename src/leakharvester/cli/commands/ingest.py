@@ -49,6 +49,21 @@ def ingest_command(
     """Ingests data from raw directory, specific file, or stdin pipe."""
     final_batch_size = batch_size or settings.BATCH_SIZE
     
+    from leakharvester.settings_manager import SettingsManager
+    sm = SettingsManager()
+    db_path = sm.get_active_db_path()
+    
+    staging_dir = settings.STAGING_DIR
+    quarantine_dir = settings.QUARANTINE_DIR
+    
+    if db_path:
+        staging_dir = db_path / "staging"
+        quarantine_dir = db_path / "quarantine"
+        
+        # Ensure directories exist
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        quarantine_dir.mkdir(parents=True, exist_ok=True)
+    
     repo = ClickHouseAdapter()
     fs = LocalFileSystemAdapter()
     ingestor = BreachIngestor(repo, fs)
@@ -61,8 +76,8 @@ def ingest_command(
         final_source_name = source_name or "stdin"
         ingestor.process_stream(
             sys.stdin, 
-            settings.STAGING_DIR, 
-            settings.QUARANTINE_DIR, 
+            staging_dir, 
+            quarantine_dir, 
             batch_size=final_batch_size, 
             source_name=final_source_name, 
             format=format, 
@@ -77,8 +92,8 @@ def ingest_command(
         try:
             ingestor.process_file(
                 file, 
-                settings.STAGING_DIR, 
-                settings.QUARANTINE_DIR, 
+                staging_dir, 
+                quarantine_dir, 
                 batch_size=final_batch_size, 
                 format=format, 
                 skip_email_validation=skip_email_validation, 
@@ -100,8 +115,8 @@ def ingest_command(
                 try:
                     ingestor.process_file(
                         f, 
-                        settings.STAGING_DIR, 
-                        settings.QUARANTINE_DIR, 
+                        staging_dir, 
+                        quarantine_dir, 
                         batch_size=final_batch_size, 
                         format=format, 
                         skip_email_validation=skip_email_validation, 
