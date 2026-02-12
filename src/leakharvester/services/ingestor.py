@@ -3,7 +3,6 @@ from typing import Dict, Any, Optional, Tuple, List, TYPE_CHECKING, Callable
 import threading
 import queue
 import uuid
-import csv
 import io
 import re
 import cchardet
@@ -12,7 +11,6 @@ from leakharvester.ports.repository import BreachRepository
 from leakharvester.ports.file_storage import FileStorage
 from leakharvester.domain.schemas import CANONICAL_SCHEMA
 from leakharvester.domain.exceptions import SchemaMismatchError, AmbiguousFormatException
-from leakharvester.domain.rules import detect_column_mapping
 from leakharvester.adapters.console import log_info, log_error, log_warning, log_success
 
 import polars as pl
@@ -201,9 +199,19 @@ class BreachIngestor:
 
             try:
                 first_row = best_df.row(0)
-                first_row_str = [str(v).lower() for v in first_row if v is not None]
+                # Convert to lower case and check for exact matches
+                first_row_str = [str(v).lower().strip() for v in first_row if v is not None]
                 
-                header_keywords = {"email", "mail", "e-mail", "password", "pass", "pwd", "user", "username", "login", "ip", "url", "site"}
+                # Strict keyword list for header detection
+                header_keywords = {
+                    "email", "mail", "e-mail", 
+                    "password", "pass", "pwd", 
+                    "user", "username", "login", 
+                    "ip", "url", "site", 
+                    "hash", "salt", "date", "doc"
+                }
+                
+                # Check for intersection - exact matches only
                 intersection = set(first_row_str) & header_keywords
                 
                 if intersection:
@@ -224,9 +232,6 @@ class BreachIngestor:
                     )
                     config["columns"] = df_header.columns
                 else:
-                    # No header, try to identify content columns
-                    # We use best_df (which has generic headers column_1, etc)
-                    # We infer based on content regex
                     col_types = []
                     email_regex = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
                     
@@ -309,13 +314,10 @@ class BreachIngestor:
                 cols = config.get("columns", [])
                 log_info(f"Detected Config: {config}")
                 
-                # Check for ambiguity
-                # Apply mapping rules to see if we found essentials (e.g. 'E-Mail' -> 'email')
                 has_essentials = False
                 if config.get("has_header", False):
-                    mapping = detect_column_mapping(cols)
-                    mapped_values = list(mapping.values())
-                    has_essentials = "email" in mapped_values and "password" in mapped_values
+                    # Trust the columns in the header
+                    has_essentials = "email" in cols and "password" in cols
                 else:
                     has_essentials = "email" in cols and "password" in cols
                 
@@ -325,7 +327,6 @@ class BreachIngestor:
                     if staging_table and not append: self.repository.drop_table(staging_table)
                     raise AmbiguousFormatException(config, cols, str(input_path))
 
-            # Setup Worker State
             procs = []
             write_queues = []
             writer_threads = []
@@ -379,7 +380,6 @@ class BreachIngestor:
                     infer_schema_length=1000
                 )
                 
-                # Read first batch to infer schema
                 batches = reader.next_batches(1)
                 if not batches:
                     log_warning("File is empty or no data found.")
@@ -388,20 +388,14 @@ class BreachIngestor:
 
                 first_batch = batches[0]
                 
-                # Dynamic Schema Inference & Sync
                 schema_map = {}
                 detected_cols = config.get("columns", [])
                 current_cols = first_batch.columns
                 
                 if config.get("has_header", False):
-                    # Trust header names but apply canonical mapping first
-                    mapping = detect_column_mapping(current_cols)
-                    
                     for col_name in current_cols:
-                        target_col = mapping.get(col_name, col_name)
-                        schema_map[target_col] = self._map_polars_type_to_clickhouse(first_batch.schema[col_name])
+                        schema_map[col_name] = self._map_polars_type_to_clickhouse(first_batch.schema[col_name])
                 else:
-                    # Map positional columns if defined in config
                     for i, target_name in enumerate(detected_cols):
                         if i < len(current_cols) and target_name != "unknown":
                             col_name_in_df = current_cols[i]
@@ -418,9 +412,7 @@ class BreachIngestor:
                     if staging_table and not append: self.repository.drop_table(staging_table)
                     return
                 
-                # Determine Potential Columns
                 potential_cols = ["source_file"] + list(schema_map.keys())
-                # Deduplicate
                 seen = set()
                 potential_cols = [x for x in potential_cols if not (x in seen or seen.add(x))]
                 target_cols = [c for c in potential_cols if c in valid_db_cols]
@@ -432,7 +424,6 @@ class BreachIngestor:
 
                 log_info(f"Starting Native Arrow Stream to {ingest_table} with {num_workers} workers...")
                 
-                # Start Workers
                 for i in range(num_workers):
                     p = self.repository.get_arrow_stream_process(ingest_table, columns=target_cols)
                     procs.append(p)
@@ -456,7 +447,6 @@ class BreachIngestor:
                     df = pending_batches.pop(0)
                     chunk_idx += 1
                     
-                    # Rename Logic
                     detected_cols = config.get("columns", [])
                     current_cols = df.columns
                     rename_ops = {}
@@ -466,7 +456,7 @@ class BreachIngestor:
                             if i < len(current_cols) and target_name != "unknown":
                                 rename_ops[current_cols[i]] = target_name
                     elif config.get("has_header", False):
-                        rename_ops = detect_column_mapping(current_cols)
+                        pass
 
                     if rename_ops:
                         df = df.rename(rename_ops)
@@ -499,10 +489,6 @@ class BreachIngestor:
                     missing_exprs = []
                     for tc in target_cols:
                         if tc not in current_set:
-                            # Use proper nulls for type
-                            # If column exists in DB but not DF, fill with null/empty
-                            # Check schema map for type? Defaults to string/null.
-                            # Polars lit(None) defaults to null.
                             missing_exprs.append(pl.lit(None).alias(tc))
                     
                     if missing_exprs:
@@ -602,7 +588,6 @@ class BreachIngestor:
         log_info(f"Starting ingestion via Stream ({source_name}) [Format: {format}] [Delim: '{delimiter}'] [Cols: {columns}] [Append: {append}]")
         log_info(f"Starting Native Arrow Stream to {ingest_table} with {num_workers} workers...")
 
-        # State for multi-worker
         procs = []
         write_queues = []
         writer_threads = []
@@ -707,18 +692,16 @@ class BreachIngestor:
                 try:
                     arrow_table = final_df.to_arrow()
                     
-                    # Initialize processes on first batch
                     if not procs:
                         for i in range(num_workers):
                             p = self.repository.get_arrow_stream_process(ingest_table, columns=target_cols)
                             procs.append(p)
-                            q = queue.Queue(maxsize=3) # Small buffer per worker
+                            q = queue.Queue(maxsize=3)
                             write_queues.append(q)
                             t = threading.Thread(target=_stream_writer, args=(i, p, q), daemon=True)
                             t.start()
                             writer_threads.append(t)
 
-                    # Round-robin distribution
                     worker_idx = (chunk_idx - 1) % num_workers
                     
                     while True:
@@ -732,7 +715,6 @@ class BreachIngestor:
                 except Exception as e:
                     log_error(f"Failed to convert chunk {chunk_idx}: {e}")
 
-            # Cleanup
             for q in write_queues:
                 q.put(None)
             
@@ -890,9 +872,20 @@ class BreachIngestor:
                     q_file.unlink()
                     continue
                 
-                df = df.with_columns(
-                    pl.col("raw_line").str.extract(email_pattern, 1).alias("email")
-                )
+                if "raw_line" in df.columns:
+                    df = df.with_columns(
+                        pl.col("raw_line").str.extract(email_pattern, 1).alias("email")
+                    )
+                elif "email" in df.columns:
+                     # Try to re-extract email from the 'email' column itself if it's dirty
+                     df = df.with_columns(
+                        pl.col("email").str.extract(email_pattern, 1).alias("email_extracted")
+                     ).with_columns(
+                        pl.coalesce(["email_extracted", "email"]).alias("email")
+                     )
+                else:
+                    log_warning(f"Skipping {q_file}: No 'raw_line' or 'email' column found.")
+                    continue
                 
                 valid_df = df.filter(pl.col("email").is_not_null())
                 
