@@ -1,7 +1,5 @@
 import json
 import os
-import pytest
-from pathlib import Path
 from unittest.mock import patch
 from leakharvester.settings_manager import SettingsManager
 

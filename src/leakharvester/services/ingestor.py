@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple, List, TYPE_CHECKING, Callable
+from typing import Dict, Any, Optional, Tuple, List, Callable
 import threading
 import queue
 import uuid
@@ -10,7 +10,7 @@ from leakharvester.config import settings
 from leakharvester.ports.repository import BreachRepository
 from leakharvester.ports.file_storage import FileStorage
 from leakharvester.domain.schemas import CANONICAL_SCHEMA
-from leakharvester.domain.exceptions import SchemaMismatchError, AmbiguousFormatException
+from leakharvester.domain.exceptions import AmbiguousFormatException
 from leakharvester.adapters.console import log_info, log_error, log_warning, log_success
 
 import polars as pl

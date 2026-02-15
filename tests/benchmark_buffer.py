@@ -1,7 +1,6 @@
 import polars as pl
 import io
 import time
-import threading
 
 # Generate dummy CSV data (approx 500MB)
 print("Generating dummy data...")

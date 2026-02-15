@@ -1,8 +1,6 @@
-import pytest
-from unittest.mock import patch, MagicMock, ANY
+from unittest.mock import patch, MagicMock
 from typer.testing import CliRunner
 from leakharvester.cli.main import app
-from leakharvester.cli.commands import db
 
 runner = CliRunner()
 

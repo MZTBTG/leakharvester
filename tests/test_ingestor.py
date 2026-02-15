@@ -1,8 +1,6 @@
-import pytest
 import polars as pl
 import pyarrow as pa
 import io
-from pathlib import Path
 from leakharvester.services.ingestor import BreachIngestor
 from leakharvester.adapters.local_fs import LocalFileSystemAdapter
 

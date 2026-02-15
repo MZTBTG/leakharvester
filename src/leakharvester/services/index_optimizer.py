@@ -1,9 +1,8 @@
 from typing import List, Dict, Any
 from dataclasses import dataclass
 from rich.console import Console
-from rich.table import Table
 from leakharvester.adapters.clickhouse import ClickHouseAdapter
-from leakharvester.adapters.console import log_info, log_error, log_warning, log_success
+from leakharvester.adapters.console import log_info, log_error, log_warning
 
 @dataclass
 class IndexRecommendation:

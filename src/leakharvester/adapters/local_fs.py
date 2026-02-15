@@ -6,7 +6,6 @@ import threading
 import queue
 import io
 from leakharvester.ports.file_storage import FileStorage
-from leakharvester.domain.schemas import RAW_CSV_SCHEMA
 
 class LocalFileSystemAdapter(FileStorage):
     def scan_csv(self, path: Path) -> pl.LazyFrame:

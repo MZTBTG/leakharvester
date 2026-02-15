@@ -3,7 +3,6 @@ from pathlib import Path
 from typing import Iterator, Optional, IO, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    import zstandard as zstd
     import nacl.pwhash
     import nacl.secret
     import nacl.utils
@@ -195,7 +194,6 @@ class SecureIO:
     def _stream_generator(input_path: Path, password: Optional[str]) -> Iterator["pa.RecordBatch"]:
         import zstandard as zstd
         import pyarrow as pa
-        import nacl.pwhash
         
         with open(input_path, 'rb') as f:
             f.read(5) 

@@ -5,7 +5,7 @@ from rich.prompt import Confirm
 from rich.console import Console
 from rich.panel import Panel
 from leakharvester.config import settings
-from leakharvester.adapters.console import log_info, log_error, log_warning
+from leakharvester.adapters.console import log_info, log_error
 from leakharvester.adapters.clickhouse import ClickHouseAdapter
 from leakharvester.adapters.local_fs import LocalFileSystemAdapter
 from leakharvester.services.ingestor import BreachIngestor

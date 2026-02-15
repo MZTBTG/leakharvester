@@ -1,5 +1,5 @@
-import typer
 import sys
+import typer
 from leakharvester.cli.commands.db import db_command
 from leakharvester.cli.commands.index import index_command
 from leakharvester.cli.commands.search import search_command
@@ -7,6 +7,9 @@ from leakharvester.cli.commands.ingest import ingest_command
 from leakharvester.cli.commands.repair import repair_command
 from leakharvester.cli.commands.info import info_command
 from leakharvester.cli.commands.secure_io import export_command, import_command
+from leakharvester.cli.ui import configure_typer_ui
+
+configure_typer_ui()
 
 app = typer.Typer(
     help="LeakHarvester: High-performance CLI for ingesting, indexing, and searching massive breach datasets.",
