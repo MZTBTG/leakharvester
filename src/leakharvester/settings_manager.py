@@ -1,6 +1,8 @@
-import json
 from pathlib import Path
 from typing import Optional, Dict, Any
+import json
+import shutil
+import importlib.resources as pkg_resources
 from leakharvester.adapters.console import log_info, log_error
 
 class SettingsManager:
@@ -72,3 +74,30 @@ class SettingsManager:
 
     def get_all(self) -> Dict[str, Any]:
         return self._settings
+
+    def get_docker_compose_path(self) -> Path:
+        """Returns the path to the deployed docker-compose.yml in the user config dir."""
+        return self.home_config.parent / "docker-compose.yml"
+
+    def ensure_docker_compose_exists(self) -> None:
+        """
+        Ensures docker-compose.yml exists in the configuration directory.
+        If not, it copies it from the package resources.
+        """
+        target_path = self.get_docker_compose_path()
+        if not target_path.exists():
+            log_info(f"Deploying docker-compose.yml to {target_path}...")
+            try:
+                ref = pkg_resources.files('leakharvester') / 'resources' / 'docker-compose.yml'
+                with pkg_resources.as_file(ref) as source_path:
+                    shutil.copy2(source_path, target_path)
+                    
+                log_info("Successfully deployed docker-compose.yml.")
+            except Exception as e:
+                log_error(f"Failed to deploy docker-compose.yml: {e}")
+                possible_source = Path(__file__).parent / "resources" / "docker-compose.yml"
+                if possible_source.exists():
+                    shutil.copy2(possible_source, target_path)
+                    log_info("Deployed via fallback path.")
+                else:
+                    log_error(f"Could not find source docker-compose.yml at {possible_source}")

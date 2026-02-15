@@ -16,19 +16,23 @@ import time
 import uuid
 
 
-def get_docker_cmd() -> Optional[List[str]]:
-    """Detects available Docker Compose command."""
+def get_docker_cmd(compose_file: Optional[str] = None) -> Optional[List[str]]:
+    """Detects available Docker Compose command and optionally appends file path."""
+    cmd = None
     if shutil.which("docker"):
         try:
             subprocess.run(["docker", "compose", "version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-            return ["docker", "compose"]
+            cmd = ["docker", "compose"]
         except subprocess.CalledProcessError:
             pass
     
-    if shutil.which("docker-compose"):
-        return ["docker-compose"]
+    if not cmd and shutil.which("docker-compose"):
+        cmd = ["docker-compose"]
         
-    return None
+    if cmd and compose_file:
+        cmd.extend(["-f", compose_file])
+        
+    return cmd
 
 def get_clickhouse_env() -> Dict[str, str]:
     """Prepares environment variables for Docker Compose."""
@@ -60,8 +64,12 @@ def ensure_db_running(force_restart: bool = False):
     if force_restart:
         log_warning("Forcing database restart to apply configuration changes...")
 
+    sm = SettingsManager()
+    sm.ensure_docker_compose_exists()
+    compose_path = str(sm.get_docker_compose_path())
+    
     env = get_clickhouse_env()
-    docker_cmd = get_docker_cmd()
+    docker_cmd = get_docker_cmd(compose_path)
 
     if not docker_cmd:
         log_warning("Docker or Docker Compose not found. Cannot auto-start database.")
@@ -72,8 +80,8 @@ def ensure_db_running(force_restart: bool = False):
             raise typer.Exit(1)
         return
     
-    if not (Path("docker-compose.yml").exists() or Path("compose.yaml").exists()):
-        log_warning("No docker-compose.yml found. Cannot auto-start database.")
+    if not Path(compose_path).exists():
+        log_warning(f"No docker-compose.yml found at {compose_path}. Cannot auto-start database.")
         return
 
     if force_restart:
@@ -339,7 +347,15 @@ def db_command(
             return
 
         if Confirm.ask(f"[bold red]DANGER:[/bold red] Stop DB and DELETE all data at {active_path}?"):
-            subprocess.run(["docker", "compose", "down"], check=False)
+            sm.ensure_docker_compose_exists()
+            compose_path = str(sm.get_docker_compose_path())
+            docker_cmd = get_docker_cmd(compose_path)
+            
+            if docker_cmd:
+                subprocess.run(docker_cmd + ["down"], check=False)
+            else:
+                log_warning("Could not determine docker command to stop database. Proceeding with file deletion...")
+            
             try:
                 shutil.rmtree(active_path)
                 log_success(f"Deleted {active_path}")
@@ -388,7 +404,13 @@ def db_command(
             
         log_info("Stopping Docker...")
         
-        docker_cmd = get_docker_cmd()
+        try:
+            sm.ensure_docker_compose_exists()
+            compose_path = str(sm.get_docker_compose_path())
+            docker_cmd = get_docker_cmd(compose_path)
+        except Exception:
+            docker_cmd = get_docker_cmd()
+
         if docker_cmd:
             env = get_clickhouse_env()
             try:
