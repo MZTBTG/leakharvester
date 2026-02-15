@@ -53,7 +53,6 @@ def test_db_allfiles_command(mock_repo_cls, mock_sm_cls):
     mock_sm_instance = mock_sm_cls.return_value
     mock_sm_instance.get_active_db_path.return_value = "/tmp/test_db"
     
-    mock_repo_instance = mock_repo_cls.return_value
     
     # Mock prompt input "wipe"
     with patch("rich.prompt.Prompt.ask", return_value="wipe"):

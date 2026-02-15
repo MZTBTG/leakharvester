@@ -24,7 +24,7 @@ def test_db_init_generates_and_stores_instance_id(tmp_path):
         
         repo_instance = MockAdapter.return_value
         
-        result = runner.invoke(app, ["db", "--init"])
+        runner.invoke(app, ["db", "--init"])
         
         # Verify ID saved to settings
         sm_instance.set_instance_id.assert_called_with("test-uuid-1234")
