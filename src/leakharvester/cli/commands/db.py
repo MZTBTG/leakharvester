@@ -51,7 +51,7 @@ def get_clickhouse_env() -> Dict[str, str]:
         env["DB_VOLUME_PATH"] = str(runtime_root / "clickhouse_data")
     return env
 
-def ensure_db_running(force_restart: bool = False):
+def ensure_db_running(force_restart: bool = False, verbose: bool = False):
     host = settings.CLICKHOUSE_HOST or "localhost"
     port = settings.CLICKHOUSE_PORT or 8123
     ping_url = f"http://{host}:{port}/ping"
@@ -74,6 +74,21 @@ def ensure_db_running(force_restart: bool = False):
     compose_path = str(sm.get_docker_compose_path())
     
     env = get_clickhouse_env()
+    
+    # Ensure DB volume is writable by container (UID 101)
+    try:
+        db_vol = Path(env["DB_VOLUME_PATH"])
+        db_vol.mkdir(parents=True, exist_ok=True)
+        
+        # Only chmod if we own it or are root
+        if db_vol.stat().st_uid == os.getuid() or os.getuid() == 0:
+             db_vol.chmod(0o777)
+        else:
+             # It's likely owned by the container user (101) already
+             pass
+    except Exception as e:
+        log_warning(f"Could not check/set permissions on DB path {env['DB_VOLUME_PATH']}: {e}")
+
     docker_cmd = get_docker_cmd(compose_path)
 
     if not docker_cmd:
@@ -91,7 +106,7 @@ def ensure_db_running(force_restart: bool = False):
 
     if force_restart:
         log_info("Stopping existing container...")
-        subprocess.run(docker_cmd + ["down"], check=False, env=env)
+        subprocess.run(docker_cmd + ["down"], check=False, env=env, stdout=None if verbose else subprocess.DEVNULL, stderr=None if verbose else subprocess.DEVNULL)
 
     log_info(f"Starting ClickHouse via Docker (Volume: {env['DB_VOLUME_PATH']})...")
     
@@ -101,26 +116,50 @@ def ensure_db_running(force_restart: bool = False):
     up_args.append("clickhouse")
 
     try:
-        subprocess.run(docker_cmd + up_args, check=True, env=env, capture_output=True, text=True)
-    except subprocess.CalledProcessError as e:
-        err_msg = e.stderr.lower()
-        if "permission denied" in err_msg and "docker.sock" in err_msg:
-            log_error("Docker Permission Denied.")
-            log_info("Your user is not in the 'docker' group.")
-            log_info("Run this command to fix it:")
-            Console().print(f"[bold green]sudo usermod -aG docker {os.environ.get('USER', '$USER')} && newgrp docker[/bold green]")
+        # If verbose, we let stdout/stderr flow to console. If not, we capture to print on error.
+        if verbose:
+            subprocess.run(docker_cmd + up_args, check=True, env=env)
         else:
-            log_error(f"Failed to start Docker container: {e.stderr}")
+            subprocess.run(docker_cmd + up_args, check=True, env=env, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        if verbose:
+            log_error("Docker command failed.")
+        else:
+            err_msg = e.stderr.lower()
+            if "permission denied" in err_msg and "docker.sock" in err_msg:
+                log_error("Docker Permission Denied.")
+                log_info("Your user is not in the 'docker' group.")
+                log_info("Run this command to fix it:")
+                Console().print(f"[bold green]sudo usermod -aG docker {os.environ.get('USER', '$USER')} && newgrp docker[/bold green]")
+            else:
+                log_error(f"Failed to start Docker container: {e.stderr}")
         raise typer.Exit(1)
 
     log_info("Waiting for database to initialize...")
-    for i in range(600):
+    for i in range(120):
         if is_online():
             log_success("Database came online!")
             return
         time.sleep(1)
     
-    log_error("Database failed to respond after 60 seconds.")
+    log_error("Database failed to respond after 120 seconds.")
+    
+    # Debugging: Dump logs from file or container
+    log_file = Path(env["LOG_PATH"]) / "clickhouse-server.err.log"
+    
+    if log_file.exists():
+        log_warning(f"Dumping error log from host ({log_file}):")
+        try:
+            subprocess.run(["tail", "-n", "50", str(log_file)], check=False)
+        except Exception as e:
+            log_error(f"Failed to read log file: {e}")
+    else:
+        log_warning("Error log file not found on host. Dumping container logs:")
+        try:
+            subprocess.run(docker_cmd + ["logs", "--tail", "50", "clickhouse"], check=False, env=env)
+        except Exception as log_ex:
+            log_error(f"Failed to retrieve logs: {log_ex}")
+
     raise typer.Exit(1)
 
 def get_ddl_sql(compression_level: int) -> str:
@@ -162,7 +201,8 @@ def db_command(
     rmfile: str = typer.Option(None, "--rmfile", help="Remove specific files (comma-separated)."),
     allfiles: bool = typer.Option(False, "--allfiles", help="Wipe ALL data (Truncate Table). Instant space reclamation."),
     remove: bool = typer.Option(False, "--remove", "-r", help="Remove the active database data (Stop & Delete)."),
-    reset_all: bool = typer.Option(False, "--reset-all", help="FACTORY RESET: Wipes Config, Data, and Docker containers.")
+    reset_all: bool = typer.Option(False, "--reset-all", help="FACTORY RESET: Wipes Config, Data, and Docker containers."),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose logging.")
 ):
     """
     Database Lifecycle Management.
@@ -194,7 +234,7 @@ def db_command(
         active_path = sm.get_active_db_path()
         console.print(f"[bold]Active Configured Path:[/bold] {active_path or '[dim]Not configured (Using defaults)[/dim]'}")
         
-        ensure_db_running()
+        ensure_db_running(verbose=verbose)
         try:
             repo = ClickHouseAdapter()
             stats = repo.get_table_stats("vault.breach_records")
@@ -205,7 +245,7 @@ def db_command(
         return
 
     if lsfiles:
-        ensure_db_running()
+        ensure_db_running(verbose=verbose)
         try:
             repo = ClickHouseAdapter()
             query = """
@@ -244,7 +284,7 @@ def db_command(
         return
 
     if rmfile:
-        ensure_db_running()
+        ensure_db_running(verbose=verbose)
         filenames = [f.strip() for f in rmfile.split(",") if f.strip()]
         if not filenames:
             log_error("No valid filenames provided.")
@@ -300,7 +340,7 @@ def db_command(
         return
 
     if allfiles:
-        ensure_db_running()
+        ensure_db_running(verbose=verbose)
         console.print("[bold red]DANGER: This will TRUNCATE the entire database. All data will be lost instantly.[/bold red]")
         
         confirmation = Prompt.ask("Type 'wipe' to confirm total data deletion")
@@ -322,7 +362,7 @@ def db_command(
             log_error("Compression level must be between 1 and 19.")
             raise typer.Exit(1)
             
-        ensure_db_running(force_restart=True)
+        ensure_db_running(force_restart=True, verbose=verbose)
         try:
             settings.create_dirs()
             sm.set_compression_level(compression)

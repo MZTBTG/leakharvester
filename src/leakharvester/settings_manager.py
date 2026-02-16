@@ -3,7 +3,7 @@ from typing import Optional, Dict, Any
 import json
 import shutil
 import importlib.resources as pkg_resources
-from leakharvester.adapters.console import log_info, log_error
+from leakharvester.adapters.console import log_info, log_error, log_warning
 
 class SettingsManager:
     """
@@ -86,13 +86,43 @@ class SettingsManager:
     def ensure_data_dirs(self) -> None:
         """Ensures data directories for Docker bind mounts exist and are writable."""
         base_dir = self.get_container_runtime_root()
-        for subdir in ["clickhouse_logs", "clickhouse_config"]:
+        import os
+        current_uid = os.getuid()
+        
+        for subdir in ["clickhouse_logs", "clickhouse_config", "clickhouse_data"]:
             path = base_dir / subdir
             path.mkdir(parents=True, exist_ok=True)
+            
             try:
-                path.chmod(0o777)
+                stat_info = path.stat()
+                # Only attempt chmod if we own the file or are root
+                if stat_info.st_uid == current_uid or current_uid == 0:
+                    path.chmod(0o777)
+                else:
+                    log_warning(f"Skipping chmod on {path}: Owned by UID {stat_info.st_uid} (Current: {current_uid})")
             except Exception as e:
-                log_error(f"Failed to set permissions for {path}: {e}")
+                log_error(f"Failed to check/set permissions for {path}: {e}")
+
+    def deploy_config_files(self) -> None:
+        """Deploys default configuration files to the runtime config directory."""
+        config_dir = self.get_container_runtime_root() / "clickhouse_config"
+        target_path = config_dir / "network_config.xml"
+        
+        # Always deploy/update to ensure connectivity settings are correct
+        log_info(f"Deploying network_config.xml to {target_path}...")
+        try:
+            ref = pkg_resources.files('leakharvester') / 'resources' / 'network_config.xml'
+            with pkg_resources.as_file(ref) as source_path:
+                shutil.copy2(source_path, target_path)
+            # Ensure it's readable by container
+            target_path.chmod(0o644)
+        except Exception as e:
+            log_error(f"Failed to deploy network_config.xml: {e}")
+            # Fallback
+            possible_source = Path(__file__).parent / "resources" / "network_config.xml"
+            if possible_source.exists():
+                shutil.copy2(possible_source, target_path)
+                target_path.chmod(0o644)
 
     def ensure_docker_compose_exists(self) -> None:
         """
@@ -100,20 +130,22 @@ class SettingsManager:
         If not, it copies it from the package resources.
         """
         self.ensure_data_dirs()
+        self.deploy_config_files()
+        
         target_path = self.get_docker_compose_path()
-        if not target_path.exists():
-            log_info(f"Deploying docker-compose.yml to {target_path}...")
-            try:
-                ref = pkg_resources.files('leakharvester') / 'resources' / 'docker-compose.yml'
-                with pkg_resources.as_file(ref) as source_path:
-                    shutil.copy2(source_path, target_path)
-                    
-                log_info("Successfully deployed docker-compose.yml.")
-            except Exception as e:
-                log_error(f"Failed to deploy docker-compose.yml: {e}")
-                possible_source = Path(__file__).parent / "resources" / "docker-compose.yml"
-                if possible_source.exists():
-                    shutil.copy2(possible_source, target_path)
-                    log_info("Deployed via fallback path.")
-                else:
-                    log_error(f"Could not find source docker-compose.yml at {possible_source}")
+        # Always overwrite to ensure path variables are up to date
+        log_info(f"Deploying/Updating docker-compose.yml to {target_path}...")
+        try:
+            ref = pkg_resources.files('leakharvester') / 'resources' / 'docker-compose.yml'
+            with pkg_resources.as_file(ref) as source_path:
+                shutil.copy2(source_path, target_path)
+                
+            log_info("Successfully deployed docker-compose.yml.")
+        except Exception as e:
+            log_error(f"Failed to deploy docker-compose.yml: {e}")
+            possible_source = Path(__file__).parent / "resources" / "docker-compose.yml"
+            if possible_source.exists():
+                shutil.copy2(possible_source, target_path)
+                log_info("Deployed via fallback path.")
+            else:
+                log_error(f"Could not find source docker-compose.yml at {possible_source}")
