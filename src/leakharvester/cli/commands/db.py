@@ -75,16 +75,13 @@ def ensure_db_running(force_restart: bool = False, verbose: bool = False):
     
     env = get_clickhouse_env()
     
-    # Ensure DB volume is writable by container (UID 101)
     try:
         db_vol = Path(env["DB_VOLUME_PATH"])
         db_vol.mkdir(parents=True, exist_ok=True)
         
-        # Only chmod if we own it or are root
         if db_vol.stat().st_uid == os.getuid() or os.getuid() == 0:
              db_vol.chmod(0o777)
         else:
-             # It's likely owned by the container user (101) already
              pass
     except Exception as e:
         log_warning(f"Could not check/set permissions on DB path {env['DB_VOLUME_PATH']}: {e}")
@@ -116,7 +113,6 @@ def ensure_db_running(force_restart: bool = False, verbose: bool = False):
     up_args.append("clickhouse")
 
     try:
-        # If verbose, we let stdout/stderr flow to console. If not, we capture to print on error.
         if verbose:
             subprocess.run(docker_cmd + up_args, check=True, env=env)
         else:
@@ -144,7 +140,6 @@ def ensure_db_running(force_restart: bool = False, verbose: bool = False):
     
     log_error("Database failed to respond after 120 seconds.")
     
-    # Debugging: Dump logs from file or container
     log_file = Path(env["LOG_PATH"]) / "clickhouse-server.err.log"
     
     if log_file.exists():

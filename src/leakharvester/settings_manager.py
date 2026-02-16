@@ -76,15 +76,12 @@ class SettingsManager:
         return self._settings
 
     def get_docker_compose_path(self) -> Path:
-        """Returns the path to the deployed docker-compose.yml in the user config dir."""
         return self.home_config.parent / "docker-compose.yml"
 
     def get_container_runtime_root(self) -> Path:
-        """Returns the absolute path to the container runtime directory."""
         return (self.home_config.parent / "container_runtime").resolve()
 
     def ensure_data_dirs(self) -> None:
-        """Ensures data directories for Docker bind mounts exist and are writable."""
         base_dir = self.get_container_runtime_root()
         import os
         current_uid = os.getuid()
@@ -95,7 +92,6 @@ class SettingsManager:
             
             try:
                 stat_info = path.stat()
-                # Only attempt chmod if we own the file or are root
                 if stat_info.st_uid == current_uid or current_uid == 0:
                     path.chmod(0o777)
                 else:
@@ -104,36 +100,27 @@ class SettingsManager:
                 log_error(f"Failed to check/set permissions for {path}: {e}")
 
     def deploy_config_files(self) -> None:
-        """Deploys default configuration files to the runtime config directory."""
         config_dir = self.get_container_runtime_root() / "clickhouse_config"
         target_path = config_dir / "network_config.xml"
         
-        # Always deploy/update to ensure connectivity settings are correct
         log_info(f"Deploying network_config.xml to {target_path}...")
         try:
             ref = pkg_resources.files('leakharvester') / 'resources' / 'network_config.xml'
             with pkg_resources.as_file(ref) as source_path:
                 shutil.copy2(source_path, target_path)
-            # Ensure it's readable by container
             target_path.chmod(0o644)
         except Exception as e:
             log_error(f"Failed to deploy network_config.xml: {e}")
-            # Fallback
             possible_source = Path(__file__).parent / "resources" / "network_config.xml"
             if possible_source.exists():
                 shutil.copy2(possible_source, target_path)
                 target_path.chmod(0o644)
 
     def ensure_docker_compose_exists(self) -> None:
-        """
-        Ensures docker-compose.yml exists in the configuration directory.
-        If not, it copies it from the package resources.
-        """
         self.ensure_data_dirs()
         self.deploy_config_files()
         
         target_path = self.get_docker_compose_path()
-        # Always overwrite to ensure path variables are up to date
         log_info(f"Deploying/Updating docker-compose.yml to {target_path}...")
         try:
             ref = pkg_resources.files('leakharvester') / 'resources' / 'docker-compose.yml'
