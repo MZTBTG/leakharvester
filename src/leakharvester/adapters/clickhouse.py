@@ -19,7 +19,8 @@ class ClickHouseAdapter(BreachRepository):
         self.settings = {
             "async_insert": 1, 
             "wait_for_async_insert": 0,
-            "max_partitions_per_insert_block": 1000
+            "max_partitions_per_insert_block": 1000,
+            "allow_experimental_inverted_index": 1
         }
 
     @property

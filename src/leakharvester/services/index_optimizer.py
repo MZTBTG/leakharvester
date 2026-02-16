@@ -89,9 +89,9 @@ class HeuristicAnalyzer:
             return IndexRecommendation("ERROR", 0.0, str(e), "")
 
 class IndexManager:
-    def __init__(self, repo: ClickHouseAdapter):
+    def __init__(self, repo: ClickHouseAdapter, table: str = "vault.breach_records"):
         self.repo = repo
-        self.table = "vault.breach_records"
+        self.table = table
         self.analyzer = HeuristicAnalyzer(repo)
 
     def list_indexes(self) -> List[Dict[str, Any]]:
