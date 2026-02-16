@@ -79,11 +79,27 @@ class SettingsManager:
         """Returns the path to the deployed docker-compose.yml in the user config dir."""
         return self.home_config.parent / "docker-compose.yml"
 
+    def get_container_runtime_root(self) -> Path:
+        """Returns the absolute path to the container runtime directory."""
+        return (self.home_config.parent / "container_runtime").resolve()
+
+    def ensure_data_dirs(self) -> None:
+        """Ensures data directories for Docker bind mounts exist and are writable."""
+        base_dir = self.get_container_runtime_root()
+        for subdir in ["clickhouse_logs", "clickhouse_config"]:
+            path = base_dir / subdir
+            path.mkdir(parents=True, exist_ok=True)
+            try:
+                path.chmod(0o777)
+            except Exception as e:
+                log_error(f"Failed to set permissions for {path}: {e}")
+
     def ensure_docker_compose_exists(self) -> None:
         """
         Ensures docker-compose.yml exists in the configuration directory.
         If not, it copies it from the package resources.
         """
+        self.ensure_data_dirs()
         target_path = self.get_docker_compose_path()
         if not target_path.exists():
             log_info(f"Deploying docker-compose.yml to {target_path}...")

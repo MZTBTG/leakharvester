@@ -40,10 +40,15 @@ def get_clickhouse_env() -> Dict[str, str]:
     active_path = sm.get_active_db_path()
     
     env = os.environ.copy()
+    
+    runtime_root = sm.get_container_runtime_root()
+    env["LOG_PATH"] = str(runtime_root / "clickhouse_logs")
+    env["CONFIG_PATH"] = str(runtime_root / "clickhouse_config")
+
     if active_path:
         env["DB_VOLUME_PATH"] = str(active_path.resolve())
     else:
-        env["DB_VOLUME_PATH"] = "./data/clickhouse_data"
+        env["DB_VOLUME_PATH"] = str(runtime_root / "clickhouse_data")
     return env
 
 def ensure_db_running(force_restart: bool = False):
