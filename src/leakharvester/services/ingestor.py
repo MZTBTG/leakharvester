@@ -592,13 +592,18 @@ class BreachIngestor:
         start_time = time.time()
         
         delimiter, columns = self._parse_format_string(format)
-        if not self._validate_and_sync_schema(columns, on_schema_mismatch=on_schema_mismatch):
+        
+        # Assume String for all stream columns
+        columns_schema = {col: "String" for col in columns}
+        
+        if not self._validate_and_sync_schema(columns_schema, on_schema_mismatch=on_schema_mismatch):
             if staging_table: self.repository.drop_table(staging_table)
             return
 
         log_info(f"Starting ingestion via Stream ({source_name}) [Format: {format}] [Delim: '{delimiter}'] [Cols: {columns}] [Append: {append}]")
         log_info(f"Starting Native Arrow Stream to {ingest_table} with {num_workers} workers...")
 
+        stop_event = threading.Event()
         procs = []
         write_queues = []
         writer_threads = []
