@@ -175,7 +175,9 @@ ORDER BY (email, source_file)
 PARTITION BY source_file
 SETTINGS
     index_granularity = 8192,
-    max_bytes_to_merge_at_min_space_in_pool = 16777216,
+    parts_to_delay_insert = 300,
+    parts_to_throw_insert = 600,
+    max_bytes_to_merge_at_min_space_in_pool = 104857600,
     min_bytes_for_wide_part = 10485760,
     old_parts_lifetime = 30;
 
