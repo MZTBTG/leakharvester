@@ -117,6 +117,9 @@ class ClickHouseAdapter(BreachRepository):
             col_str = ", ".join(columns)
             query = f"INSERT INTO {table_name} ({col_str}) FORMAT ArrowStream"
         
+        # Fix: Enable async_insert to prevent 'Too many parts' backpressure during high-speed ingestion
+        query += " SETTINGS async_insert=1, wait_for_async_insert=0"
+        
         cmd = [
             "clickhouse-client",
             "--host", self.host,

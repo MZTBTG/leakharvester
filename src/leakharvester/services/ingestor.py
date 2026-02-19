@@ -565,6 +565,7 @@ class BreachIngestor:
             log_error(f"Error during processing of {input_path}: {e}")
             stop_event.set()
             if staging_table: self.repository.drop_table(staging_table)
+            self._move_to_quarantine(input_path, quarantine_dir)
         finally:
             pass
 
