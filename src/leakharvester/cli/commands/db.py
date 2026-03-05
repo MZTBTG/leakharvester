@@ -158,6 +158,7 @@ def ensure_db_running(force_restart: bool = False, verbose: bool = False):
     raise typer.Exit(1)
 
 def get_ddl_sql(compression_level: int) -> str:
+    # "max_bytes_to_merge_at_min_space_in_pool = 104857600" was removed for tests
     return f"""
 CREATE DATABASE IF NOT EXISTS vault;
 
@@ -177,9 +178,8 @@ SETTINGS
     index_granularity = 8192,
     parts_to_delay_insert = 300,
     parts_to_throw_insert = 600,
-    max_bytes_to_merge_at_min_space_in_pool = 104857600,
-    min_bytes_for_wide_part = 10485760,
-    old_parts_lifetime = 30;
+    min_bytes_for_wide_part = 104857600,
+    old_parts_lifetime = 60;
 
 CREATE TABLE IF NOT EXISTS vault.system_info
 (

@@ -318,9 +318,9 @@ class BreachIngestor:
                 has_essentials = False
                 if config.get("has_header", False):
                     # Trust the columns in the header
-                    has_essentials = "email" in cols and "password" in cols
+                    has_essentials = "email" in cols
                 else:
-                    has_essentials = "email" in cols and "password" in cols
+                    has_essentials = "email" in cols
                 
                 is_ambiguous = not cols or ("unknown" in cols and not has_essentials) or (len(cols) > 2 and not has_essentials)
 

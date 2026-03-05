@@ -4,4 +4,7 @@
         <level>information</level>
         <console>1</console>
     </logger>
+    <background_pool_size>20</background_pool_size>
+    <background_schedule_pool_size>20</background_schedule_pool_size>
+    <max_server_memory_usage>45097156608</max_server_memory_usage>
 </clickhouse>
