@@ -15,7 +15,6 @@ import subprocess
 import time
 import uuid
 
-
 def get_docker_cmd(compose_file: Optional[str] = None) -> Optional[List[str]]:
     """Detects available Docker Compose command and optionally appends file path."""
     cmd = None
@@ -289,10 +288,9 @@ def db_command(
 
         try:
             repo = ClickHouseAdapter()
-            
-            valid_files_result = repo.client.query("SELECT DISTINCT source_file FROM vault.breach_records")
+            valid_files_result = repo.client.query("SELECT DISTINCT trim(BOTH '''' FROM partition) AS source_file FROM system.parts WHERE database = 'vault' AND table = 'breach_records'")
             valid_files = {row[0] for row in valid_files_result.result_rows}
-            
+
             invalid_files = [f for f in filenames if f not in valid_files]
             
             if invalid_files:
@@ -306,7 +304,6 @@ def db_command(
                         max(import_date) as last_import
                     FROM vault.breach_records
                     GROUP BY source_file
-                    ORDER BY last_import DESC
                 """
                 result = repo.client.query(query)
                 if result.result_rows:
@@ -321,16 +318,12 @@ def db_command(
                 return
 
             if Confirm.ask(f"Are you sure you want to delete data for {len(filenames)} file(s)?"):
-                files_str = "', '".join(filenames)
                 log_info(f"Deleting data for: {filenames}...")
                 
-                delete_sql = f"ALTER TABLE vault.breach_records DELETE WHERE source_file IN ('{files_str}')"
-                repo.client.command(delete_sql)
-                log_success("Delete mutation submitted.")
-                
-                log_info("Triggering OPTIMIZE TABLE FINAL to force physical disk cleanup...")
-                repo.client.command("OPTIMIZE TABLE vault.breach_records FINAL", settings={'receive_timeout': 3600})
-                log_success("Optimization complete.")
+                for f in filenames:
+                    drop_sql = f"ALTER TABLE vault.breach_records DROP PARTITION '{f}'"
+                    repo.client.command(drop_sql)
+                log_success("Partition(s) dropped successfully.")
 
         except Exception as e:
             log_error(f"Failed to remove files: {e}")
