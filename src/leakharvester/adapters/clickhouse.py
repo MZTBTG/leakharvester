@@ -119,7 +119,7 @@ class ClickHouseAdapter(BreachRepository):
         
         # Fix: Enable async_insert to prevent 'Too many parts' backpressure during high-speed ingestion
         # SETTINGS must appear BEFORE the FORMAT clause in INSERT statements
-        query += " SETTINGS async_insert=1, wait_for_async_insert=0, async_insert_max_data_size=524288000, async_insert_busy_timeout_ms=10000, send_timeout=300, connect_timeout=120, send_receive_timeout=600 FORMAT ArrowStream"
+        query += " SETTINGS async_insert=1, wait_for_async_insert=1, async_insert_max_data_size=1073741824, async_insert_busy_timeout_ms=10000, send_timeout=300, connect_timeout=120, max_threads=20 FORMAT ArrowStream"
         
         cmd = [
             "clickhouse-client",
