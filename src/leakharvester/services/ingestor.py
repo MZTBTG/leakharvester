@@ -649,6 +649,23 @@ class BreachIngestor:
             if staging_table: self.repository.drop_table(staging_table)
             return
 
+        try:
+            valid_db_cols = set(self.repository.get_columns(target_table))
+        except Exception as e:
+            log_error(f"Failed to fetch schema: {e}")
+            if staging_table and not append: self.repository.drop_table(staging_table)
+            return
+
+        potential_cols = ["source_file"] + [c for c in columns if c not in ("null", "unknown")]
+        seen = set()
+        potential_cols = [x for x in potential_cols if not (x in seen or seen.add(x))]
+        target_cols_for_stream = [c for c in potential_cols if c in valid_db_cols]
+        
+        if not target_cols_for_stream:
+            log_error("No valid columns found to ingest.")
+            if staging_table and not append: self.repository.drop_table(staging_table)
+            return
+
         log_info(f"Starting ingestion via Stream ({source_name}) [Format: {format}] [Delim: '{delimiter}'] [Cols: {columns}] [Append: {append}] [HTTP: {use_http}]")
         if not use_http:
             log_info(f"Starting Native Arrow Stream to {ingest_table} with {num_workers} workers...")
@@ -758,17 +775,18 @@ class BreachIngestor:
                     pl.lit(source_name).alias("source_file"),
                 ])
                 
-                target_cols = ["source_file", "email", "username", "password"]
+                target_cols = target_cols_for_stream
                 current_set = set(df.columns)
                 missing_exprs = []
                 for tc in target_cols:
                     if tc not in current_set:
-                         missing_exprs.append(pl.lit("").alias(tc))
+                         missing_exprs.append(pl.lit(None).alias(tc))
                 
                 if missing_exprs:
                     df = df.with_columns(missing_exprs)
                 
                 final_df = df.select(target_cols)
+                log_info(f"Chunk {chunk_idx}: final_df height is {final_df.height}")
                 
                 try:
                     arrow_table = final_df.to_arrow()
