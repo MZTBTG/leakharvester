@@ -786,7 +786,6 @@ class BreachIngestor:
                     df = df.with_columns(missing_exprs)
                 
                 final_df = df.select(target_cols)
-                log_info(f"Chunk {chunk_idx}: final_df height is {final_df.height}")
                 
                 try:
                     arrow_table = final_df.to_arrow()
