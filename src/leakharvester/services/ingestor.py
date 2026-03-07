@@ -786,7 +786,7 @@ class BreachIngestor:
                     elif not write_queues and use_http:
                         log_info(f"Starting HTTP Ingestion to {ingest_table} with {num_workers} workers...")
                         for i in range(num_workers):
-                            q = queue.Queue(maxsize=3)
+                            q = queue.Queue(maxsize=2)
                             write_queues.append(q)
                             t = threading.Thread(target=_http_worker, args=(i, q, ingest_table), daemon=True)
                             t.start()
