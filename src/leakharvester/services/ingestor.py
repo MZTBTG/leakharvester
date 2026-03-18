@@ -287,14 +287,9 @@ class BreachIngestor:
         target_table = settings.BREACH_TABLE
         source_label = custom_source_name or input_path.name
         staging_table = None
+        staging_table_created = False
         stop_event = threading.Event()
         procs = []
-
-        if append:
-            ingest_table = target_table
-        else:
-            staging_table = f"vault.staging_{uuid.uuid4().hex}"
-            ingest_table = staging_table
 
         try:
             config = {}
@@ -324,6 +319,12 @@ class BreachIngestor:
 
                 if is_ambiguous:
                     raise AmbiguousFormatException(config, cols, str(input_path))
+
+            if append:
+                ingest_table = target_table
+            else:
+                staging_table = f"vault.staging_{uuid.uuid4().hex}"
+                ingest_table = staging_table
 
             procs = []
             write_queues = []
@@ -384,7 +385,10 @@ class BreachIngestor:
 
             try:
 
-                
+                detected_encoding = config.get("encoding", "utf8").lower()
+                if detected_encoding in ("utf-8", "utf8"):
+                    detected_encoding = "utf8-lossy"
+
                 chunk_idx = 0
                 reader = pl.read_csv_batched(
                     input_path,
@@ -394,10 +398,9 @@ class BreachIngestor:
                     batch_size=batch_size,
                     ignore_errors=True,
                     truncate_ragged_lines=True,
-                    encoding="utf8-lossy",
+                    encoding=detected_encoding,
                     infer_schema_length=1000
-                )
-                
+                )                
                 batches = reader.next_batches(1)
                 if not batches:
                     log_warning("File is empty or no data found.")
@@ -424,12 +427,13 @@ class BreachIngestor:
                 if staging_table and not append:
                     log_info(f"Creating staging table: {staging_table}")
                     self.repository.create_staging_table(staging_table, target_table)
+                    staging_table_created = True
 
                 try:
                     valid_db_cols = set(self.repository.get_columns(target_table))
                 except Exception as e:
                     log_error(f"Failed to fetch schema: {e}")
-                    if staging_table and not append: self.repository.drop_table(staging_table)
+                    if staging_table and staging_table_created and not append: self.repository.drop_table(staging_table)
                     return
                 
                 potential_cols = ["source_file"] + list(schema_map.keys())
@@ -439,7 +443,7 @@ class BreachIngestor:
                 
                 if not target_cols:
                     log_error("No valid columns found to ingest.")
-                    if staging_table and not append: self.repository.drop_table(staging_table)
+                    if staging_table and staging_table_created and not append: self.repository.drop_table(staging_table)
                     return
 
                 if use_http:
@@ -587,12 +591,12 @@ class BreachIngestor:
         except KeyboardInterrupt:
             log_warning("Ingestion interrupted by user.")
             stop_event.set()
-            if staging_table: self.repository.drop_table(staging_table)
+            if staging_table and staging_table_created: self.repository.drop_table(staging_table)
             raise
         except Exception as e:
             log_error(f"Error during processing of {input_path}: {e}")
             stop_event.set()
-            
+
             # Diagnostic: check for failed worker stderr
             failed_workers_info = []
             for i, p in enumerate(procs):
@@ -604,16 +608,15 @@ class BreachIngestor:
                             failed_workers_info.append(f"Worker {i} stderr: {stderr.decode(errors='ignore')}")
                     except:
                         pass
-            
+
             if failed_workers_info:
                 for info in failed_workers_info:
                     log_error(info)
 
-            if staging_table: self.repository.drop_table(staging_table)
+            if staging_table and staging_table_created: self.repository.drop_table(staging_table)
             self._move_to_quarantine(input_path, quarantine_dir)
         finally:
             pass
-
     def process_stream(self, stream: Any, staging_dir: Path, quarantine_dir: Path, batch_size: int, source_name: str = "stdin", format: str = "auto", skip_email_validation: bool = False, num_workers: int = 1, append: bool = False, on_schema_mismatch: Optional[Callable[[List[str]], bool]] = None, use_http: bool = False) -> None:
         """
         Ingests data from a stream (stdin/pipe) using the dynamic logic.

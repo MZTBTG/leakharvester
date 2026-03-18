@@ -64,6 +64,7 @@ class MockRepository:
 
     def add_column(self, table, name, type_):
         self.columns.append(name)
+        return True
 
     def get_arrow_stream_process(self, table_name, columns=None):
         return MockProcess(self, table_name)
@@ -147,5 +148,5 @@ def test_ambiguity_abort(temp_dirs):
     # Should abort (no inserts, no swap)
     assert len(repo.inserts) == 0
     assert len(repo.partition_swaps) == 0
-    # Should drop staging table
-    assert len(repo.dropped_tables) >= 1
+    # Should NOT drop staging table because it was never created
+    assert len(repo.dropped_tables) == 0
