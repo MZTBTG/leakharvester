@@ -294,8 +294,6 @@ class BreachIngestor:
             ingest_table = target_table
         else:
             staging_table = f"vault.staging_{uuid.uuid4().hex}"
-            log_info(f"Creating staging table: {staging_table}")
-            self.repository.create_staging_table(staging_table, target_table)
             ingest_table = staging_table
 
         try:
@@ -325,7 +323,6 @@ class BreachIngestor:
                 is_ambiguous = not cols or ("unknown" in cols and not has_essentials) or (len(cols) > 2 and not has_essentials)
 
                 if is_ambiguous:
-                    if staging_table and not append: self.repository.drop_table(staging_table)
                     raise AmbiguousFormatException(config, cols, str(input_path))
 
             procs = []
@@ -397,14 +394,13 @@ class BreachIngestor:
                     batch_size=batch_size,
                     ignore_errors=True,
                     truncate_ragged_lines=True,
-                    encoding=config.get("encoding", "utf8"),
+                    encoding="utf8-lossy",
                     infer_schema_length=1000
                 )
                 
                 batches = reader.next_batches(1)
                 if not batches:
                     log_warning("File is empty or no data found.")
-                    if staging_table and not append: self.repository.drop_table(staging_table)
                     return
 
                 first_batch = batches[0]
@@ -423,8 +419,11 @@ class BreachIngestor:
                             schema_map[target_name] = self._map_polars_type_to_clickhouse(first_batch.schema[col_name_in_df])
 
                 if not self._validate_and_sync_schema(schema_map, on_schema_mismatch=on_schema_mismatch):
-                    if staging_table and not append: self.repository.drop_table(staging_table)
                     return
+
+                if staging_table and not append:
+                    log_info(f"Creating staging table: {staging_table}")
+                    self.repository.create_staging_table(staging_table, target_table)
 
                 try:
                     valid_db_cols = set(self.repository.get_columns(target_table))
@@ -632,8 +631,6 @@ class BreachIngestor:
             ingest_table = target_table
         else:
             staging_table = f"vault.staging_{uuid.uuid4().hex}"
-            log_info(f"Creating staging table: {staging_table}")
-            self.repository.create_staging_table(staging_table, target_table)
             ingest_table = staging_table
 
         chunk_idx = 0
@@ -646,8 +643,11 @@ class BreachIngestor:
         columns_schema = {col: "String" for col in columns}
         
         if not self._validate_and_sync_schema(columns_schema, on_schema_mismatch=on_schema_mismatch):
-            if staging_table: self.repository.drop_table(staging_table)
             return
+
+        if staging_table and not append:
+            log_info(f"Creating staging table: {staging_table}")
+            self.repository.create_staging_table(staging_table, target_table)
 
         try:
             valid_db_cols = set(self.repository.get_columns(target_table))

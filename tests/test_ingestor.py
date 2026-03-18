@@ -39,6 +39,9 @@ class MockProcess:
     def kill(self):
         pass
 
+    def poll(self):
+        return self.returncode
+
 class MockRepository:
     def __init__(self):
         self.batches = []
