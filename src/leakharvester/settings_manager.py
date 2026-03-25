@@ -101,17 +101,17 @@ class SettingsManager:
 
     def deploy_config_files(self) -> None:
         config_dir = self.get_container_runtime_root() / "clickhouse_config"
-        target_path = config_dir / "network_config.xml"
+        target_path = config_dir / "clickhouse_dynamic_config.xml"
         
-        log_info(f"Deploying network_config.xml to {target_path}...")
+        log_info(f"Deploying clickhouse_dynamic_config.xml to {target_path}...")
         try:
-            ref = pkg_resources.files('leakharvester') / 'resources' / 'network_config.xml'
+            ref = pkg_resources.files('leakharvester') / 'resources' / 'clickhouse_dynamic_config.xml'
             with pkg_resources.as_file(ref) as source_path:
                 shutil.copy2(source_path, target_path)
             target_path.chmod(0o644)
         except Exception as e:
-            log_error(f"Failed to deploy network_config.xml: {e}")
-            possible_source = Path(__file__).parent / "resources" / "network_config.xml"
+            log_error(f"Failed to deploy clickhouse_dynamic_config.xml: {e}")
+            possible_source = Path(__file__).parent / "resources" / "clickhouse_dynamic_config.xml"
             if possible_source.exists():
                 shutil.copy2(possible_source, target_path)
                 target_path.chmod(0o644)

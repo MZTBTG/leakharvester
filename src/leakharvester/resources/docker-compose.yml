@@ -13,17 +13,19 @@ services:
       - ${DB_VOLUME_PATH}:/var/lib/clickhouse
       - ${LOG_PATH}:/var/log/clickhouse-server
       - ${CONFIG_PATH}:/etc/clickhouse-server/config.d
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
     environment:
       - CLICKHOUSE_DB=vault
       - CLICKHOUSE_USER=leakharvester
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-secret_password}
       - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+      - MALLOC_CONF=background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000
     cap_add:
       - SYS_NICE
       - NET_ADMIN
       - IPC_LOCK
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping" ]
       interval: 10s
       timeout: 5s
       retries: 5

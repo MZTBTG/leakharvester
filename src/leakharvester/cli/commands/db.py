@@ -15,7 +15,6 @@ import subprocess
 import time
 import uuid
 
-
 def get_docker_cmd(compose_file: Optional[str] = None) -> Optional[List[str]]:
     """Detects available Docker Compose command and optionally appends file path."""
     cmd = None
@@ -158,6 +157,7 @@ def ensure_db_running(force_restart: bool = False, verbose: bool = False):
     raise typer.Exit(1)
 
 def get_ddl_sql(compression_level: int) -> str:
+    # "max_bytes_to_merge_at_min_space_in_pool = 104857600" was removed for tests
     return f"""
 CREATE DATABASE IF NOT EXISTS vault;
 
@@ -175,9 +175,10 @@ ORDER BY (email, source_file)
 PARTITION BY source_file
 SETTINGS
     index_granularity = 8192,
-    max_bytes_to_merge_at_min_space_in_pool = 16777216,
-    min_bytes_for_wide_part = 10485760,
-    old_parts_lifetime = 30;
+    parts_to_delay_insert = 300,
+    parts_to_throw_insert = 600,
+    min_bytes_for_wide_part = 104857600,
+    old_parts_lifetime = 60;
 
 CREATE TABLE IF NOT EXISTS vault.system_info
 (
@@ -287,10 +288,9 @@ def db_command(
 
         try:
             repo = ClickHouseAdapter()
-            
-            valid_files_result = repo.client.query("SELECT DISTINCT source_file FROM vault.breach_records")
+            valid_files_result = repo.client.query("SELECT DISTINCT trim(BOTH '''' FROM partition) AS source_file FROM system.parts WHERE database = 'vault' AND table = 'breach_records'")
             valid_files = {row[0] for row in valid_files_result.result_rows}
-            
+
             invalid_files = [f for f in filenames if f not in valid_files]
             
             if invalid_files:
@@ -304,7 +304,6 @@ def db_command(
                         max(import_date) as last_import
                     FROM vault.breach_records
                     GROUP BY source_file
-                    ORDER BY last_import DESC
                 """
                 result = repo.client.query(query)
                 if result.result_rows:
@@ -319,16 +318,12 @@ def db_command(
                 return
 
             if Confirm.ask(f"Are you sure you want to delete data for {len(filenames)} file(s)?"):
-                files_str = "', '".join(filenames)
                 log_info(f"Deleting data for: {filenames}...")
                 
-                delete_sql = f"ALTER TABLE vault.breach_records DELETE WHERE source_file IN ('{files_str}')"
-                repo.client.command(delete_sql)
-                log_success("Delete mutation submitted.")
-                
-                log_info("Triggering OPTIMIZE TABLE FINAL to force physical disk cleanup...")
-                repo.client.command("OPTIMIZE TABLE vault.breach_records FINAL", settings={'receive_timeout': 3600})
-                log_success("Optimization complete.")
+                for f in filenames:
+                    drop_sql = f"ALTER TABLE vault.breach_records DROP PARTITION '{f}'"
+                    repo.client.command(drop_sql)
+                log_success("Partition(s) dropped successfully.")
 
         except Exception as e:
             log_error(f"Failed to remove files: {e}")
@@ -397,31 +392,24 @@ def db_command(
                 log_warning("Could not determine docker command to stop database. Proceeding with file deletion...")
             
             try:
-                shutil.rmtree(active_path)
-                log_success(f"Deleted {active_path}")
+                parent = active_path.resolve().parent
+                target = active_path.name
+                cmd = [
+                    "docker", "run", "--rm",
+                    "-v", f"{parent}:/cleanup_mount",
+                    "--entrypoint", "rm",
+                    "clickhouse/clickhouse-server:24.3",
+                    "-rf", f"/cleanup_mount/{target}"
+                ]
+                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                log_success(f"Deleted {active_path} (via Docker).")
             except Exception as e:
-                if isinstance(e, PermissionError) or (hasattr(e, 'errno') and e.errno == 13):
-                    log_warning("Permission denied on host (Docker-created files). Attempting force removal via Docker...")
-                    try:
-                        parent = active_path.resolve().parent
-                        target = active_path.name
-                        cmd = [
-                            "docker", "run", "--rm",
-                            "-v", f"{parent}:/cleanup_mount",
-                            "--entrypoint", "rm",
-                            "clickhouse/clickhouse-server:24.3",
-                            "-rf", f"/cleanup_mount/{target}"
-                        ]
-                        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-                        
-                        if not active_path.exists():
-                            log_success(f"Deleted {active_path} (via Docker).")
-                            return
-                    except subprocess.CalledProcessError as docker_err:
-                        log_error(f"Docker force removal failed: {docker_err.stderr.decode().strip()}")
-                
-                log_error(f"Failed to delete {active_path}: {e}")
-        return
+                try:
+                    shutil.rmtree(active_path)
+                    log_success(f"Deleted {active_path}")
+                except Exception as ex:
+                    log_error(f"Failed to delete {active_path}: {ex}")
+                return
 
     if reset_all:
         console.print("[bold red]FACTORY RESET[/bold red]")
@@ -445,9 +433,11 @@ def db_command(
         log_info("Stopping Docker...")
         
         try:
-            sm.ensure_docker_compose_exists()
-            compose_path = str(sm.get_docker_compose_path())
-            docker_cmd = get_docker_cmd(compose_path)
+            compose_path = sm.get_docker_compose_path()
+            if compose_path.exists():
+                docker_cmd = get_docker_cmd(str(compose_path))
+            else:
+                docker_cmd = get_docker_cmd()
         except Exception:
             docker_cmd = get_docker_cmd()
 
@@ -455,9 +445,12 @@ def db_command(
             env = get_clickhouse_env()
             try:
                 log_info("Force stopping containers...")
-                subprocess.run(docker_cmd + ["kill"], check=False, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                
-                subprocess.run(docker_cmd + ["down", "-v"], check=False, env=env)
+                # If we don't have a compose file, try direct docker rm
+                if not compose_path.exists():
+                     subprocess.run(["docker", "rm", "-f", "leakharvester_db"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    subprocess.run(docker_cmd + ["kill"], check=False, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.run(docker_cmd + ["down", "-v"], check=False, env=env)
             except Exception as e:
                 log_warning(f"Failed to stop Docker containers: {e}")
         else:
@@ -488,34 +481,50 @@ def db_command(
             log_warning(f"Zombie cleanup check failed: {e}")
 
         log_info("Removing Configs...")
-        if sm.home_config.exists():
-            sm.home_config.unlink()
+
+        default_dir = sm.home_config.parent
+        if default_dir.exists():
+            try:
+                parent = default_dir.resolve().parent
+                target = default_dir.name
+                cmd = [
+                    "docker", "run", "--rm",
+                    "-v", f"{parent}:/cleanup_mount",
+                    "--entrypoint", "rm",
+                    "clickhouse/clickhouse-server:24.3",
+                    "-rf", f"/cleanup_mount/{target}"
+                ]
+                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                log_info(f"Removed default configuration directory via Docker: {default_dir}")
+            except Exception as e:
+                try:
+                    shutil.rmtree(default_dir)
+                    log_info(f"Removed default configuration directory: {default_dir}")
+                except Exception as ex:
+                    log_error(f"Failed to remove {default_dir}: {ex}")
+
         if sm.local_config.exists():
             sm.local_config.unlink()
-            
+
         active_path = sm.get_active_db_path()
         if active_path and active_path.exists():
             log_info(f"Removing Data at {active_path}...")
             try:
-                shutil.rmtree(active_path)
+                parent = active_path.resolve().parent
+                target = active_path.name
+                cmd = [
+                    "docker", "run", "--rm",
+                    "-v", f"{parent}:/cleanup_mount",
+                    "--entrypoint", "rm",
+                    "clickhouse/clickhouse-server:24.3",
+                    "-rf", f"/cleanup_mount/{target}"
+                ]
+                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             except Exception as e:
-                if isinstance(e, PermissionError) or (hasattr(e, 'errno') and e.errno == 13):
-                    log_warning("Permission denied on host. Attempting force removal via Docker...")
-                    try:
-                        parent = active_path.resolve().parent
-                        target = active_path.name
-                        cmd = [
-                            "docker", "run", "--rm",
-                            "-v", f"{parent}:/cleanup_mount",
-                            "--entrypoint", "rm",
-                            "clickhouse/clickhouse-server:24.3",
-                            "-rf", f"/cleanup_mount/{target}"
-                        ]
-                        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-                    except subprocess.CalledProcessError as docker_err:
-                        log_error(f"Docker force removal failed: {docker_err.stderr.decode().strip()}")
-                else:
-                    log_error(f"Failed to delete {active_path}: {e}")
+                try:
+                    shutil.rmtree(active_path)
+                except Exception as ex:
+                    log_error(f"Failed to delete {active_path}: {ex}")
 
         log_success("Factory Reset Complete. System is clean.")
         return
