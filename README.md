@@ -24,55 +24,65 @@ LeakHarvester is built on a Hexagonal Architecture (Ports & Adapters) to separat
 
 ### Setup
 
-1. **Installing and configuring the dependencies:**
+1. **Instructions for install and configure dependencies:**
     - **Basic dependencies:**
     ```bash
     sudo apt update && \
     sudo apt install python3-venv python3-dev git curl apt-transport-https ca-certificates gnupg
     ```
     <details>
-    <summary> **Basic Docker installation instruction for Debian systems. For other dists, check https://docs.docker.com/engine/install/:** </summary>
-    - **Docker config (Example for Debian systems. For other dists, check https://docs.docker.com/engine/install/):**
-    ```bash
-    sudo install -m 0755 -d /etc/apt/keyrings && \
-    sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc && \
-    sudo chmod a+r /etc/apt/keyrings/docker.asc && \
-    sudo tee /etc/apt/sources.list.d/docker.sources <<EOF
-    Types: deb
-    URIs: https://download.docker.com/linux/debian
-    Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
-    Components: stable
-    Signed-By: /etc/apt/keyrings/docker.asc
-    EOF
-
-    sudo apt update && \
-    sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin # If some error occur, run `sudo apt --fix-broken install`
-    sudo systemctl enable --now docker && \
-    sudo systemctl enable containerd.service && \
-    sudo groupadd docker && \
-    sudo usermod -aG docker $USER && \
-    newgrp docker
-    ```
-    </details>
-    - **UV installation:**
-    ```bash
-    curl -LsSf https://astral.sh/uv/install.sh | sh && \
-    echo 'export PATH=$PATH:$HOME/.local/bin' >> ~/.profile && \
-    source $HOME/.profile
-    ```
+    <summary>
+        <b>Basic Docker installation for Debian systems. For other dists, check https://docs.docker.com/engine/install/.</b>
+    </summary>
+        
+        sudo install -m 0755 -d /etc/apt/keyrings && \
+        sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc && \
+        sudo chmod a+r /etc/apt/keyrings/docker.asc && \
+        sudo tee /etc/apt/sources.list.d/docker.sources <<EOF
+        Types: deb
+        URIs: https://download.docker.com/linux/debian
+        Suites: $(. /etc/os-release && echo "$VERSION_CODENAME")
+        Components: stable
+        Signed-By: /etc/apt/keyrings/docker.asc
+        EOF
     
-    - **ClickHouse config and install:**
-    ```bash
-    curl -fsSL 'https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key' | \
-    sudo gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg && \
-    ARCH=$(dpkg --print-architecture) && \
-    echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg arch=${ARCH}] https://packages.clickhouse.com/deb stable main" | \
-    sudo tee /etc/apt/sources.list.d/clickhouse.list && \
-    sudo apt update && \
-    sudo apt install clickhouse-server clickhouse-client
-    ```
+        sudo apt update && \
+        sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin # If some error occur, run `sudo apt --fix-broken install`
+        sudo systemctl enable --now docker && \
+        sudo systemctl enable containerd.service && \
+        sudo groupadd docker && \
+        sudo usermod -aG docker $USER && \
+        newgrp docker
 
-2.  **Clone and Sync:**
+    </details>
+
+    <details>
+    <summary>
+        <b>UV installation (https://docs.astral.sh/uv/getting-started/installation/).</b>
+    </summary>
+   
+        curl -LsSf https://astral.sh/uv/install.sh | sh && \
+        echo 'export PATH=$PATH:$HOME/.local/bin' >> ~/.profile && \
+        source $HOME/.profile
+   
+    </details>
+    <details>
+        <summary>    
+        <b>ClickHouse configuration and installation for Debian systems. For other dists, check https://clickhouse.com/docs/install.</b>
+        </summary>
+        
+        ```bash
+        curl -fsSL 'https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key' | \
+        sudo gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg && \
+        ARCH=$(dpkg --print-architecture) && \
+        echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg arch=${ARCH}] https://packages.clickhouse.com/deb stable main" | \
+        sudo tee /etc/apt/sources.list.d/clickhouse.list && \
+        sudo apt update && \
+        sudo apt install clickhouse-server clickhouse-client
+        ```
+   </details>
+
+1.  **Clone and Sync LeakHarvester:**
     ```bash
     git clone https://github.com/mztbtg/leakharvester.git && \
     cd leakharvester && \
@@ -80,7 +90,7 @@ LeakHarvester is built on a Hexagonal Architecture (Ports & Adapters) to separat
     # To update it, you can run 'git pull' and 'uv tool install --reinstall .'.
     ```
 
-3.  **Start the Database:**
+2.  **Start the Database:**
     LeakHarvester manages its own Docker container.
     ```bash
     leakharvester db --init
@@ -179,7 +189,7 @@ leakharvester repair
 
 ### `info` - Dashboard
 Displays a terminal dashboard with database health, storage efficiency (compression ratios), active indices, and top data sources.
-
+<!--
 ## Documentation Index
 
 Detailed technical documentation is available for every module:
