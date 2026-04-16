@@ -30,7 +30,8 @@ LeakHarvester is built on a Hexagonal Architecture (Ports & Adapters) to separat
     sudo apt update && \
     sudo apt install python3-venv python3-dev git curl apt-transport-https ca-certificates gnupg
     ```
-    
+    <details>
+    <summary> **Basic Docker installation instruction for Debian systems. For other dists, check https://docs.docker.com/engine/install/:** </summary>
     - **Docker config (Example for Debian systems. For other dists, check https://docs.docker.com/engine/install/):**
     ```bash
     sudo install -m 0755 -d /etc/apt/keyrings && \
@@ -52,7 +53,7 @@ LeakHarvester is built on a Hexagonal Architecture (Ports & Adapters) to separat
     sudo usermod -aG docker $USER && \
     newgrp docker
     ```
-
+    </details>
     - **UV installation:**
     ```bash
     curl -LsSf https://astral.sh/uv/install.sh | sh && \
