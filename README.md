@@ -68,7 +68,7 @@ LeakHarvester is built on a Hexagonal Architecture (Ports & Adapters) to separat
     </details>
     <details>
         <summary>    
-        <b>ClickHouse configuration and installation for Debian systems. For other dists, check https://clickhouse.com/docs/install.</b>
+        <b>ClickHouse installation for Debian systems. For other dists, check https://clickhouse.com/docs/install.</b>
         </summary>
         
         ```bash
