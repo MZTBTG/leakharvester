@@ -34,7 +34,7 @@ class ClickHouseAdapter(BreachRepository):
                 password=self.password,
                 database=self.database,
                 settings=self.settings,
-                connect_timeout=30,
+                connect_timeout=120,
                 send_receive_timeout=600
             )
         return self._thread_local.client
@@ -112,10 +112,14 @@ class ClickHouseAdapter(BreachRepository):
 
         native_port = 9000
         
-        query = f"INSERT INTO {table_name} FORMAT ArrowStream"
+        query = f"INSERT INTO {table_name}"
         if columns:
             col_str = ", ".join(columns)
-            query = f"INSERT INTO {table_name} ({col_str}) FORMAT ArrowStream"
+            query += f" ({col_str})"
+        
+        # Fix: Enable async_insert to prevent 'Too many parts' backpressure during high-speed ingestion
+        # SETTINGS must appear BEFORE the FORMAT clause in INSERT statements
+        query += " SETTINGS async_insert=1, wait_for_async_insert=1, async_insert_max_data_size=1073741824, async_insert_busy_timeout_ms=1000, send_timeout=300, connect_timeout=120, max_threads=20 FORMAT ArrowStream"
         
         cmd = [
             "clickhouse-client",

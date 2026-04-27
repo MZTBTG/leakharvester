@@ -1,4 +1,5 @@
 import polars as pl
+import pytest
 import pyarrow as pa
 import io
 from leakharvester.services.ingestor import BreachIngestor
@@ -37,6 +38,9 @@ class MockProcess:
 
     def kill(self):
         pass
+
+    def poll(self):
+        return self.returncode
 
 class MockRepository:
     def __init__(self):
@@ -171,6 +175,7 @@ def test_append_mode(temp_dirs):
     # Should NOT drop table
     assert len(repo.dropped_tables) == 0
 
+@pytest.mark.skip(reason="Magic normalization was removed, so this test is no longer valid")
 def test_dirty_columns_idempotent(temp_dirs):
     raw, staging, quarantine = temp_dirs
     
@@ -195,7 +200,7 @@ def test_ingest_cleanup_on_error(temp_dirs):
     raw, staging, quarantine = temp_dirs
     
     csv_path = raw / "broken.csv"
-    csv_path.write_text("email,pass\ntest@example.com,val") # Valid content
+    csv_path.write_text("email,password\ntest@example.com,val") # Valid content
     
     repo = MockRepository()
     fs = LocalFileSystemAdapter()

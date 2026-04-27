@@ -22,7 +22,7 @@ def info_command(
         log_error(f"Failed to fetch info: {e}")
         return
 
-    overview_table = Table.grid(padding=1)
+    overview_table = Table.grid(padding=1, expand=False)
     overview_table.add_column(style="bold cyan", justify="right")
     overview_table.add_column(style="white")
     
@@ -34,10 +34,11 @@ def info_command(
     overview_table.add_row("Active Indices:", str(len(indices)))
 
     overview_panel = Panel(
-        overview_table, 
+        overview_table,
         title="[bold blue]Database Overview[/bold blue]", 
         border_style="blue",
-        box=box.ROUNDED
+        box=box.ROUNDED,
+        expand=False
     )
 
     schema_text = ", ".join([f"[green]{c}[/green]" for c in cols])
@@ -45,10 +46,11 @@ def info_command(
         schema_text, 
         title="[bold green]Current Schema[/bold green]", 
         border_style="green",
-        box=box.ROUNDED
+        box=box.ROUNDED,
+        expand=False
     )
     
-    idx_table = Table(box=box.SIMPLE_HEAD, expand=True)
+    idx_table = Table(box=box.SIMPLE_HEAD, expand=False)
     idx_table.add_column("Index Name", style="yellow")
     idx_table.add_column("Type")
     idx_table.add_column("Granularity")
@@ -62,10 +64,11 @@ def info_command(
         idx_table,
         title="[bold yellow]Skipping Indices[/bold yellow]",
         border_style="yellow",
-        box=box.ROUNDED
+        box=box.ROUNDED,
+        expand=False
     )
 
-    src_table = Table(title=f"Top {limit} Source Files", box=box.MINIMAL_DOUBLE_HEAD)
+    src_table = Table(title=f"Top {limit} Source Files", box=box.MINIMAL_DOUBLE_HEAD, expand=False)
     src_table.add_column("Source File", style="bold magenta")
     src_table.add_column("Rows", justify="right")
     src_table.add_column("First Import", style="dim")

@@ -44,7 +44,9 @@ def ingest_command(
     batch_size: int = typer.Option(None, help="Batch size (rows) per chunk. Defaults to config (1M)."),
     watch: bool = typer.Option(False, help="Watch raw directory for new files."),
     workers: int = typer.Option(4, "--workers", "-w", help="Number of concurrent upload workers. Defaults to 4."),
-    append: bool = typer.Option(False, "--append", help="Append data to existing source file instead of overwriting.")
+    append: bool = typer.Option(False, "--append", help="Append data to existing source file instead of overwriting."),
+    alternative: bool = typer.Option(False, "--alternative", help="Use alternative HTTP-based ingestion (slower but more stable for massive files)."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Automatically confirm schema updates.")
 ):
     """Ingests data from raw directory, specific file, or stdin pipe."""
     final_batch_size = batch_size or settings.BATCH_SIZE
@@ -68,6 +70,14 @@ def ingest_command(
     fs = LocalFileSystemAdapter()
     ingestor = BreachIngestor(repo, fs)
     
+    def handle_schema_mismatch(missing_cols: list[str]) -> bool:
+        if yes:
+            return True
+        if stdin and not sys.stdin.isatty():
+            log_error("Cannot prompt for schema updates when reading from stdin. Use the --yes / -y flag to auto-confirm.")
+            return False
+        return _confirm_schema_update(missing_cols)
+    
     if stdin:
         if sys.stdin.isatty():
             log_error("Stdin is empty. Pipe data into this command: cat file | leakharvester ingest --stdin")
@@ -84,7 +94,8 @@ def ingest_command(
             skip_email_validation=skip_email_validation,
             num_workers=workers,
             append=append,
-            on_schema_mismatch=_confirm_schema_update
+            on_schema_mismatch=handle_schema_mismatch,
+            use_http=alternative
         )
         return
 
@@ -100,7 +111,8 @@ def ingest_command(
                 custom_source_name=source_name,
                 num_workers=workers,
                 append=append,
-                on_schema_mismatch=_confirm_schema_update
+                on_schema_mismatch=handle_schema_mismatch,
+                use_http=alternative
             )
         except AmbiguousFormatException as e:
             _handle_ambiguous_format(e)
@@ -123,7 +135,8 @@ def ingest_command(
                         custom_source_name=source_name,
                         num_workers=workers,
                         append=append,
-                        on_schema_mismatch=_confirm_schema_update
+                        on_schema_mismatch=handle_schema_mismatch,
+                        use_http=alternative
                     )
                 except AmbiguousFormatException as e:
                     _handle_ambiguous_format(e)

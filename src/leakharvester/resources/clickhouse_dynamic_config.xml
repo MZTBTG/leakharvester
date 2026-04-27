@@ -1,0 +1,28 @@
+<clickhouse>
+    <listen_host>0.0.0.0</listen_host>
+    <logger>
+        <level>information</level>
+        <console>1</console>
+    </logger>
+    <background_pool_size>20</background_pool_size>
+    <background_schedule_pool_size>20</background_schedule_pool_size>
+    <max_server_memory_usage>45097156608</max_server_memory_usage>
+    <profiles>
+        <default>
+            <max_insert_threads>20</max_insert_threads>
+            <max_threads>20</max_threads>
+        </default>
+    </profiles>
+    <metric_log remove="1"/>
+    <asynchronous_metric_log remove="1"/>
+    <query_log remove="1"/> 
+    <trace_log remove="1"/>
+    <query_thread_log remove="1"/>
+    <part_log remove="1"/>
+    <text_log remove="1"/>
+    <session_log remove="1"/>
+    <processors_profile_log remove="1"/>
+    <asynchronous_insert_log remove="1"/>
+    <crash_log remove="1"/>
+    <opentelemetry_span_log remove="1"/>
+</clickhouse>

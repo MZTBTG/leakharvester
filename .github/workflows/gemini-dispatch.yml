@@ -25,7 +25,7 @@ defaults:
 jobs:
   debugger:
     if: |-
-      ${{ fromJSON(vars.GEMINI_DEBUG || vars.ACTIONS_STEP_DEBUG || false) }}
+      ${{ fromJSON(vars.GEMINI_DEBUG || vars.ACTIONS_STEP_DEBUG || 'false') }}
     runs-on: 'ubuntu-latest'
     permissions:
       contents: 'read'
@@ -127,7 +127,7 @@ jobs:
     needs: 'dispatch'
     if: |-
       ${{ needs.dispatch.outputs.command == 'review' }}
-    uses: './.github/workflows/gemini-review.yml'
+    uses: ./.github/workflows/gemini-review.yml
     permissions:
       contents: 'read'
       id-token: 'write'
@@ -141,7 +141,7 @@ jobs:
     needs: 'dispatch'
     if: |-
       ${{ needs.dispatch.outputs.command == 'triage' }}
-    uses: './.github/workflows/gemini-triage.yml'
+    uses: ./.github/workflows/gemini-triage.yml
     permissions:
       contents: 'read'
       id-token: 'write'
@@ -155,7 +155,7 @@ jobs:
     needs: 'dispatch'
     if: |-
       ${{ needs.dispatch.outputs.command == 'invoke' }}
-    uses: './.github/workflows/gemini-invoke.yml'
+    uses: ./.github/workflows/gemini-invoke.yml
     permissions:
       contents: 'read'
       id-token: 'write'
