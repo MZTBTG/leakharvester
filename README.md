@@ -215,3 +215,6 @@ Detailed technical documentation is available for every module:
 *   [Search Command](docs/src/leakharvester/cli/commands/search.md)
 *   [Index Command](docs/src/leakharvester/cli/commands/index.md)
 *   [Secure IO Command](docs/src/leakharvester/cli/commands/secure_io.md)
+
+### `todo`:
+- Obtensão automatizada de leaks a partir de torrents, sem armazená-los completamente em discos em texto puro ou formato padrão
