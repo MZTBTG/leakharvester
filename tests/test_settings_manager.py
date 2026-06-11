@@ -1,7 +1,5 @@
 import json
 import os
-import pytest
-from pathlib import Path
 from unittest.mock import patch
 from leakharvester.settings_manager import SettingsManager
 
@@ -24,7 +22,7 @@ def test_settings_manager_init_creates_missing_file(tmp_path):
     
     try:
         with patch("pathlib.Path.home", return_value=fake_home):
-             manager = SettingsManager()
+             SettingsManager()
              
              assert home_config_path.exists(), "Settings file should be created if missing"
              content = json.loads(home_config_path.read_text())

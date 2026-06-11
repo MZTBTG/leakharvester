@@ -20,6 +20,8 @@ def index_command(
     ngram_n: int = typer.Option(4, "--ngram-n", help="Gram size (e.g. 4 for trigrams)."),
     ngram_size: int = typer.Option(32768, "--ngram-size", help="Bloom filter size in bytes."),
     inverted: bool = typer.Option(False, "-i", "--inverted", help="Apply [cyan]Inverted Index[/cyan] (ClickHouse native)."),
+    yes: bool = typer.Option(False, "-y", "--yes", help="Skip confirmation prompts."),
+    table_name: str = typer.Option("vault.breach_records", "--table", help="Target table"),
 ):
     """
     Database Indexing Manager.
@@ -50,12 +52,12 @@ def index_command(
       [yellow]leakharvester index -c password -n[/yellow] (Trigram index on Password)
     """
     repo = ClickHouseAdapter()
-    manager = IndexManager(repo)
+    manager = IndexManager(repo, table=table_name)
     console = Console()
     
     if list_indexes:
         idxs = manager.list_indexes()
-        table = Table(title="Active Indexes")
+        table = Table(title=f"Active Indexes ({table_name})")
         table.add_column("Name", style="cyan")
         table.add_column("Column", style="magenta")
         table.add_column("Type", style="green")
@@ -75,7 +77,7 @@ def index_command(
 
     target_cols = []
     if column:
-        all_cols = repo.get_columns("vault.breach_records")
+        all_cols = repo.get_columns(table_name)
         requested = [c.strip() for c in column.split(",")]
         invalid = [c for c in requested if c not in all_cols]
         if invalid:
@@ -84,7 +86,7 @@ def index_command(
             raise typer.Exit(1)
         target_cols = requested
     elif auto_optimize:
-        target_cols = [c for c in repo.get_columns("vault.breach_records") if c != 'email']
+        target_cols = [c for c in repo.get_columns(table_name) if c != 'email']
     else:
         if not remove: 
              log_error("Please specify columns (-c) or enable automation (-a) or list (-l).")
@@ -95,7 +97,7 @@ def index_command(
             log_error("Please specify columns to remove indexes from.")
             raise typer.Exit(1)
         
-        if Confirm.ask(f"Drop indexes for {target_cols}?"):
+        if yes or Confirm.ask(f"Drop indexes for {target_cols}?"):
             for col in target_cols:
                 manager.drop_index(col)
         return
@@ -124,7 +126,7 @@ def index_command(
             sample_size = 10000
             while True:
                 console.print(f"\n[bold]Analyzing column: {col}[/bold]")
-                rec = analyzer.analyze_column("vault.breach_records", col, sample_size, auto_random)
+                rec = analyzer.analyze_column(table_name, col, sample_size, auto_random)
                 
                 rtable = Table(show_header=False, box=None)
                 rtable.add_row("Recommendation:", f"[{'green' if rec.confidence > 0.8 else 'yellow'}]{rec.type}[/]")

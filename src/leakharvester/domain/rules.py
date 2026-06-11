@@ -1,5 +1,5 @@
 import polars as pl
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 def normalize_text_expr(col_name: str) -> pl.Expr:
     """

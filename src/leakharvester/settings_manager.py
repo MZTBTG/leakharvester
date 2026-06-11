@@ -1,7 +1,9 @@
-import json
 from pathlib import Path
 from typing import Optional, Dict, Any
-from leakharvester.adapters.console import log_info, log_error
+import json
+import shutil
+import importlib.resources as pkg_resources
+from leakharvester.adapters.console import log_info, log_error, log_warning
 
 class SettingsManager:
     """
@@ -72,3 +74,65 @@ class SettingsManager:
 
     def get_all(self) -> Dict[str, Any]:
         return self._settings
+
+    def get_docker_compose_path(self) -> Path:
+        return self.home_config.parent / "docker-compose.yml"
+
+    def get_container_runtime_root(self) -> Path:
+        return (self.home_config.parent / "container_runtime").resolve()
+
+    def ensure_data_dirs(self) -> None:
+        base_dir = self.get_container_runtime_root()
+        import os
+        current_uid = os.getuid()
+        
+        for subdir in ["clickhouse_logs", "clickhouse_config", "clickhouse_data"]:
+            path = base_dir / subdir
+            path.mkdir(parents=True, exist_ok=True)
+            
+            try:
+                stat_info = path.stat()
+                if stat_info.st_uid == current_uid or current_uid == 0:
+                    path.chmod(0o777)
+                else:
+                    log_warning(f"Skipping chmod on {path}: Owned by UID {stat_info.st_uid} (Current: {current_uid})")
+            except Exception as e:
+                log_error(f"Failed to check/set permissions for {path}: {e}")
+
+    def deploy_config_files(self) -> None:
+        config_dir = self.get_container_runtime_root() / "clickhouse_config"
+        target_path = config_dir / "clickhouse_dynamic_config.xml"
+        
+        log_info(f"Deploying clickhouse_dynamic_config.xml to {target_path}...")
+        try:
+            ref = pkg_resources.files('leakharvester') / 'resources' / 'clickhouse_dynamic_config.xml'
+            with pkg_resources.as_file(ref) as source_path:
+                shutil.copy2(source_path, target_path)
+            target_path.chmod(0o644)
+        except Exception as e:
+            log_error(f"Failed to deploy clickhouse_dynamic_config.xml: {e}")
+            possible_source = Path(__file__).parent / "resources" / "clickhouse_dynamic_config.xml"
+            if possible_source.exists():
+                shutil.copy2(possible_source, target_path)
+                target_path.chmod(0o644)
+
+    def ensure_docker_compose_exists(self) -> None:
+        self.ensure_data_dirs()
+        self.deploy_config_files()
+        
+        target_path = self.get_docker_compose_path()
+        log_info(f"Deploying/Updating docker-compose.yml to {target_path}...")
+        try:
+            ref = pkg_resources.files('leakharvester') / 'resources' / 'docker-compose.yml'
+            with pkg_resources.as_file(ref) as source_path:
+                shutil.copy2(source_path, target_path)
+                
+            log_info("Successfully deployed docker-compose.yml.")
+        except Exception as e:
+            log_error(f"Failed to deploy docker-compose.yml: {e}")
+            possible_source = Path(__file__).parent / "resources" / "docker-compose.yml"
+            if possible_source.exists():
+                shutil.copy2(possible_source, target_path)
+                log_info("Deployed via fallback path.")
+            else:
+                log_error(f"Could not find source docker-compose.yml at {possible_source}")

@@ -1,8 +1,6 @@
-import pytest
-from unittest.mock import patch, MagicMock, ANY
+from unittest.mock import patch, MagicMock
 from typer.testing import CliRunner
 from leakharvester.cli.main import app
-from leakharvester.cli.commands import db
 
 runner = CliRunner()
 
@@ -26,7 +24,7 @@ def test_db_init_generates_and_stores_instance_id(tmp_path):
         
         repo_instance = MockAdapter.return_value
         
-        result = runner.invoke(app, ["db", "--init"])
+        runner.invoke(app, ["db", "--init"])
         
         # Verify ID saved to settings
         sm_instance.set_instance_id.assert_called_with("test-uuid-1234")

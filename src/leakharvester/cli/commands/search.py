@@ -4,8 +4,6 @@ from rich.console import Console
 from rich.panel import Panel
 from rich import box
 from rich.table import Table
-import csv
-import io
 import time
 import sys
 from leakharvester.adapters.console import log_info, log_error, log_warning, log_success

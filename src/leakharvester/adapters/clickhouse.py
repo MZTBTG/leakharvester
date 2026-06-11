@@ -19,7 +19,8 @@ class ClickHouseAdapter(BreachRepository):
         self.settings = {
             "async_insert": 1, 
             "wait_for_async_insert": 0,
-            "max_partitions_per_insert_block": 1000
+            "max_partitions_per_insert_block": 1000,
+            "allow_experimental_inverted_index": 1
         }
 
     @property
@@ -32,7 +33,9 @@ class ClickHouseAdapter(BreachRepository):
                 username=self.username,
                 password=self.password,
                 database=self.database,
-                settings=self.settings
+                settings=self.settings,
+                connect_timeout=120,
+                send_receive_timeout=600
             )
         return self._thread_local.client
 
@@ -109,10 +112,14 @@ class ClickHouseAdapter(BreachRepository):
 
         native_port = 9000
         
-        query = f"INSERT INTO {table_name} FORMAT ArrowStream"
+        query = f"INSERT INTO {table_name}"
         if columns:
             col_str = ", ".join(columns)
-            query = f"INSERT INTO {table_name} ({col_str}) FORMAT ArrowStream"
+            query += f" ({col_str})"
+        
+        # Fix: Enable async_insert to prevent 'Too many parts' backpressure during high-speed ingestion
+        # SETTINGS must appear BEFORE the FORMAT clause in INSERT statements
+        query += " SETTINGS async_insert=1, wait_for_async_insert=1, async_insert_max_data_size=1073741824, async_insert_busy_timeout_ms=1000, send_timeout=300, connect_timeout=120, max_threads=20 FORMAT ArrowStream"
         
         cmd = [
             "clickhouse-client",
@@ -180,3 +187,7 @@ class ClickHouseAdapter(BreachRepository):
         if hasattr(self._thread_local, 'client'):
             self._thread_local.client.close()
             del self._thread_local.client
+
+    def reset_connection(self) -> None:
+        """Forces the thread-local client to reconnect on next access."""
+        self.close()

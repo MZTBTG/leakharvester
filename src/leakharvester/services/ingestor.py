@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple, List, TYPE_CHECKING, Callable
+from typing import Dict, Any, Optional, Tuple, List, Callable
 import threading
 import queue
 import uuid
@@ -10,7 +10,7 @@ from leakharvester.config import settings
 from leakharvester.ports.repository import BreachRepository
 from leakharvester.ports.file_storage import FileStorage
 from leakharvester.domain.schemas import CANONICAL_SCHEMA
-from leakharvester.domain.exceptions import SchemaMismatchError, AmbiguousFormatException
+from leakharvester.domain.exceptions import AmbiguousFormatException
 from leakharvester.adapters.console import log_info, log_error, log_warning, log_success
 
 import polars as pl
@@ -279,23 +279,17 @@ class BreachIngestor:
         custom_source_name: Optional[str] = None,
         num_workers: int = 1,
         append: bool = False,
-        on_schema_mismatch: Optional[Callable[[List[str]], bool]] = None
+        on_schema_mismatch: Optional[Callable[[List[str]], bool]] = None,
+        use_http: bool = False
     ) -> None:
-        log_info(f"Starting processing of: {input_path} [Format: {format}, SkipVal: {skip_email_validation}, Workers: {num_workers}, Append: {append}]")
+        log_info(f"Starting processing of: {input_path} [Format: {format}, SkipVal: {skip_email_validation}, Workers: {num_workers}, Append: {append}, HTTP: {use_http}]")
         
         target_table = settings.BREACH_TABLE
         source_label = custom_source_name or input_path.name
         staging_table = None
-
-        if append:
-            ingest_table = target_table
-        else:
-            staging_table = f"vault.staging_{uuid.uuid4().hex}"
-            log_info(f"Creating staging table: {staging_table}")
-            self.repository.create_staging_table(staging_table, target_table)
-            ingest_table = staging_table
-
+        staging_table_created = False
         stop_event = threading.Event()
+        procs = []
 
         try:
             config = {}
@@ -317,15 +311,20 @@ class BreachIngestor:
                 has_essentials = False
                 if config.get("has_header", False):
                     # Trust the columns in the header
-                    has_essentials = "email" in cols and "password" in cols
+                    has_essentials = "email" in cols
                 else:
-                    has_essentials = "email" in cols and "password" in cols
+                    has_essentials = "email" in cols
                 
                 is_ambiguous = not cols or ("unknown" in cols and not has_essentials) or (len(cols) > 2 and not has_essentials)
 
                 if is_ambiguous:
-                    if staging_table and not append: self.repository.drop_table(staging_table)
                     raise AmbiguousFormatException(config, cols, str(input_path))
+
+            if append:
+                ingest_table = target_table
+            else:
+                staging_table = f"vault.staging_{uuid.uuid4().hex}"
+                ingest_table = staging_table
 
             procs = []
             write_queues = []
@@ -364,9 +363,32 @@ class BreachIngestor:
                             process_handle.stdin.close()
                     except (OSError, ValueError): pass
 
+            def _http_worker(idx, q, table_name):
+                try:
+                    while True:
+                        item = q.get()
+                        if item is None:
+                            q.task_done()
+                            break
+                        
+                        table = item
+                        try:
+                            # Direct HTTP insert
+                            self.repository.insert_arrow_batch(table, table_name)
+                        except Exception as e:
+                            writer_error.append(e)
+                            break
+                        finally:
+                            q.task_done()
+                except Exception as e:
+                    writer_error.append(e)
+
             try:
 
-                
+                detected_encoding = config.get("encoding", "utf8").lower()
+                if detected_encoding in ("utf-8", "utf8"):
+                    detected_encoding = "utf8-lossy"
+
                 chunk_idx = 0
                 reader = pl.read_csv_batched(
                     input_path,
@@ -376,14 +398,12 @@ class BreachIngestor:
                     batch_size=batch_size,
                     ignore_errors=True,
                     truncate_ragged_lines=True,
-                    encoding=config.get("encoding", "utf8"),
+                    encoding=detected_encoding,
                     infer_schema_length=1000
-                )
-                
+                )                
                 batches = reader.next_batches(1)
                 if not batches:
                     log_warning("File is empty or no data found.")
-                    if staging_table and not append: self.repository.drop_table(staging_table)
                     return
 
                 first_batch = batches[0]
@@ -402,14 +422,18 @@ class BreachIngestor:
                             schema_map[target_name] = self._map_polars_type_to_clickhouse(first_batch.schema[col_name_in_df])
 
                 if not self._validate_and_sync_schema(schema_map, on_schema_mismatch=on_schema_mismatch):
-                    if staging_table and not append: self.repository.drop_table(staging_table)
                     return
+
+                if staging_table and not append:
+                    log_info(f"Creating staging table: {staging_table}")
+                    self.repository.create_staging_table(staging_table, target_table)
+                    staging_table_created = True
 
                 try:
                     valid_db_cols = set(self.repository.get_columns(target_table))
                 except Exception as e:
                     log_error(f"Failed to fetch schema: {e}")
-                    if staging_table and not append: self.repository.drop_table(staging_table)
+                    if staging_table and staging_table_created and not append: self.repository.drop_table(staging_table)
                     return
                 
                 potential_cols = ["source_file"] + list(schema_map.keys())
@@ -419,19 +443,27 @@ class BreachIngestor:
                 
                 if not target_cols:
                     log_error("No valid columns found to ingest.")
-                    if staging_table and not append: self.repository.drop_table(staging_table)
+                    if staging_table and staging_table_created and not append: self.repository.drop_table(staging_table)
                     return
 
-                log_info(f"Starting Native Arrow Stream to {ingest_table} with {num_workers} workers...")
-                
-                for i in range(num_workers):
-                    p = self.repository.get_arrow_stream_process(ingest_table, columns=target_cols)
-                    procs.append(p)
-                    q = queue.Queue(maxsize=3)
-                    write_queues.append(q)
-                    t = threading.Thread(target=_stream_writer, args=(i, p, q), daemon=True)
-                    t.start()
-                    writer_threads.append(t)
+                if use_http:
+                    log_info(f"Starting HTTP Ingestion to {ingest_table} with {num_workers} workers...")
+                    for i in range(num_workers):
+                        q = queue.Queue(maxsize=3)
+                        write_queues.append(q)
+                        t = threading.Thread(target=_http_worker, args=(i, q, ingest_table), daemon=True)
+                        t.start()
+                        writer_threads.append(t)
+                else:
+                    log_info(f"Starting Native Arrow Stream to {ingest_table} with {num_workers} workers...")
+                    for i in range(num_workers):
+                        p = self.repository.get_arrow_stream_process(ingest_table, columns=target_cols)
+                        procs.append(p)
+                        q = queue.Queue(maxsize=3)
+                        write_queues.append(q)
+                        t = threading.Thread(target=_stream_writer, args=(i, p, q), daemon=True)
+                        t.start()
+                        writer_threads.append(t)
 
                 pending_batches = [first_batch]
                 
@@ -510,8 +542,20 @@ class BreachIngestor:
 
                     except Exception as e:
                         log_error(f"Failed to ingest chunk {chunk_idx}: {e}")
-                        q_path = quarantine_dir / f"failed_ingest_{input_path.stem}_{chunk_idx}.parquet"
-                        final_df.write_parquet(q_path)
+                        
+                        # Critical check: If the error came from a worker, stop everything.
+                        if writer_error:
+                             log_error(f"Critical worker failure detected: {writer_error[0]}. Aborting ingestion.")
+                             stop_event.set()
+                             break
+
+                        try:
+                            quarantine_dir.mkdir(parents=True, exist_ok=True)
+                            q_path = quarantine_dir / f"failed_ingest_{input_path.stem}_{chunk_idx}.parquet"
+                            final_df.write_parquet(q_path)
+                            log_warning(f"Chunk quarantined to: {q_path}")
+                        except Exception as qe:
+                            log_error(f"Failed to save quarantine file: {qe}")
 
                 # Cleanup
                 for q in write_queues:
@@ -547,17 +591,33 @@ class BreachIngestor:
         except KeyboardInterrupt:
             log_warning("Ingestion interrupted by user.")
             stop_event.set()
-            if staging_table: self.repository.drop_table(staging_table)
+            if staging_table and staging_table_created: self.repository.drop_table(staging_table)
             raise
         except Exception as e:
             log_error(f"Error during processing of {input_path}: {e}")
             stop_event.set()
-            if staging_table: self.repository.drop_table(staging_table)
+
+            # Diagnostic: check for failed worker stderr
+            failed_workers_info = []
+            for i, p in enumerate(procs):
+                if p.poll() is not None:
+                    # Process died, get stderr
+                    try:
+                        _, stderr = p.communicate(timeout=2)
+                        if stderr:
+                            failed_workers_info.append(f"Worker {i} stderr: {stderr.decode(errors='ignore')}")
+                    except:
+                        pass
+
+            if failed_workers_info:
+                for info in failed_workers_info:
+                    log_error(info)
+
+            if staging_table and staging_table_created: self.repository.drop_table(staging_table)
             self._move_to_quarantine(input_path, quarantine_dir)
         finally:
             pass
-
-    def process_stream(self, stream: Any, staging_dir: Path, quarantine_dir: Path, batch_size: int, source_name: str = "stdin", format: str = "auto", skip_email_validation: bool = False, num_workers: int = 1, append: bool = False, on_schema_mismatch: Optional[Callable[[List[str]], bool]] = None) -> None:
+    def process_stream(self, stream: Any, staging_dir: Path, quarantine_dir: Path, batch_size: int, source_name: str = "stdin", format: str = "auto", skip_email_validation: bool = False, num_workers: int = 1, append: bool = False, on_schema_mismatch: Optional[Callable[[List[str]], bool]] = None, use_http: bool = False) -> None:
         """
         Ingests data from a stream (stdin/pipe) using the dynamic logic.
         """
@@ -567,13 +627,13 @@ class BreachIngestor:
         
         target_table = settings.BREACH_TABLE
         staging_table = None
+        stop_event = threading.Event()
+        procs = []
         
         if append:
             ingest_table = target_table
         else:
             staging_table = f"vault.staging_{uuid.uuid4().hex}"
-            log_info(f"Creating staging table: {staging_table}")
-            self.repository.create_staging_table(staging_table, target_table)
             ingest_table = staging_table
 
         chunk_idx = 0
@@ -581,18 +641,42 @@ class BreachIngestor:
         start_time = time.time()
         
         delimiter, columns = self._parse_format_string(format)
-        if not self._validate_and_sync_schema(columns, on_schema_mismatch=on_schema_mismatch):
-            if staging_table: self.repository.drop_table(staging_table)
+        
+        # Assume String for all stream columns
+        columns_schema = {col: "String" for col in columns}
+        
+        if not self._validate_and_sync_schema(columns_schema, on_schema_mismatch=on_schema_mismatch):
             return
 
-        log_info(f"Starting ingestion via Stream ({source_name}) [Format: {format}] [Delim: '{delimiter}'] [Cols: {columns}] [Append: {append}]")
-        log_info(f"Starting Native Arrow Stream to {ingest_table} with {num_workers} workers...")
+        if staging_table and not append:
+            log_info(f"Creating staging table: {staging_table}")
+            self.repository.create_staging_table(staging_table, target_table)
 
-        procs = []
+        try:
+            valid_db_cols = set(self.repository.get_columns(target_table))
+        except Exception as e:
+            log_error(f"Failed to fetch schema: {e}")
+            if staging_table and not append: self.repository.drop_table(staging_table)
+            return
+
+        potential_cols = ["source_file"] + [c for c in columns if c not in ("null", "unknown")]
+        seen = set()
+        potential_cols = [x for x in potential_cols if not (x in seen or seen.add(x))]
+        target_cols_for_stream = [c for c in potential_cols if c in valid_db_cols]
+        
+        if not target_cols_for_stream:
+            log_error("No valid columns found to ingest.")
+            if staging_table and not append: self.repository.drop_table(staging_table)
+            return
+
+        log_info(f"Starting ingestion via Stream ({source_name}) [Format: {format}] [Delim: '{delimiter}'] [Cols: {columns}] [Append: {append}] [HTTP: {use_http}]")
+        if not use_http:
+            log_info(f"Starting Native Arrow Stream to {ingest_table} with {num_workers} workers...")
+
         write_queues = []
         writer_threads = []
         writer_error = []
-        
+                
         def _stream_writer(idx, process_handle, q):
             arrow_writer = None
             try:
@@ -624,10 +708,27 @@ class BreachIngestor:
                     if process_handle.stdin: 
                         process_handle.stdin.close()
                 except (OSError, ValueError): pass
-        
-        try:
 
-            
+        def _http_worker(idx, q, table_name):
+            try:
+                while True:
+                    item = q.get()
+                    if item is None:
+                        q.task_done()
+                        break
+                    
+                    table = item
+                    try:
+                        self.repository.insert_arrow_batch(table, table_name)
+                    except Exception as e:
+                        writer_error.append(e)
+                        break
+                    finally:
+                        q.task_done()
+            except Exception as e:
+                writer_error.append(e)
+        
+        try:            
             for df in self.file_storage.read_stream_batched(stream, batch_size=batch_size):
                 if writer_error:
                     break
@@ -677,12 +778,12 @@ class BreachIngestor:
                     pl.lit(source_name).alias("source_file"),
                 ])
                 
-                target_cols = ["source_file", "email", "username", "password"]
+                target_cols = target_cols_for_stream
                 current_set = set(df.columns)
                 missing_exprs = []
                 for tc in target_cols:
                     if tc not in current_set:
-                         missing_exprs.append(pl.lit("").alias(tc))
+                         missing_exprs.append(pl.lit(None).alias(tc))
                 
                 if missing_exprs:
                     df = df.with_columns(missing_exprs)
@@ -692,13 +793,22 @@ class BreachIngestor:
                 try:
                     arrow_table = final_df.to_arrow()
                     
-                    if not procs:
+                    if not procs and not use_http:
                         for i in range(num_workers):
                             p = self.repository.get_arrow_stream_process(ingest_table, columns=target_cols)
                             procs.append(p)
                             q = queue.Queue(maxsize=3)
                             write_queues.append(q)
                             t = threading.Thread(target=_stream_writer, args=(i, p, q), daemon=True)
+                            t.start()
+                            writer_threads.append(t)
+                    
+                    elif not write_queues and use_http:
+                        log_info(f"Starting HTTP Ingestion to {ingest_table} with {num_workers} workers...")
+                        for i in range(num_workers):
+                            q = queue.Queue(maxsize=2)
+                            write_queues.append(q)
+                            t = threading.Thread(target=_http_worker, args=(i, q, ingest_table), daemon=True)
                             t.start()
                             writer_threads.append(t)
 
@@ -714,6 +824,11 @@ class BreachIngestor:
 
                 except Exception as e:
                     log_error(f"Failed to convert chunk {chunk_idx}: {e}")
+                    # Critical check: If the error came from a worker, stop everything.
+                    if writer_error:
+                         log_error(f"Critical worker failure detected: {writer_error[0]}. Aborting ingestion.")
+                         stop_event.set()
+                         break
 
             for q in write_queues:
                 q.put(None)
@@ -730,7 +845,7 @@ class BreachIngestor:
                 if p.returncode != 0:
                     raise Exception(f"Worker process failed: {stderr.decode()}")
 
-            if not procs:
+            if not procs and not use_http:
                 log_warning("No data processed.")
             
             total_time = time.time() - start_time
@@ -747,6 +862,23 @@ class BreachIngestor:
         except Exception as e:
             log_error(f"Error during stream ingestion: {e}")
             stop_event.set()
+            
+            # Diagnostic: check for failed worker stderr
+            failed_workers_info = []
+            for i, p in enumerate(procs):
+                if p.poll() is not None:
+                    # Process died, get stderr
+                    try:
+                        _, stderr = p.communicate(timeout=2)
+                        if stderr:
+                            failed_workers_info.append(f"Worker {i} stderr: {stderr.decode(errors='ignore')}")
+                    except:
+                        pass
+            
+            if failed_workers_info:
+                for info in failed_workers_info:
+                    log_error(info)
+
             if staging_table: self.repository.drop_table(staging_table)
             # Kill procs
             for p in procs:
@@ -757,6 +889,7 @@ class BreachIngestor:
 
     def _ingestion_worker(self, q: queue.Queue, error_event: threading.Event, error_container: list) -> None:
         """Background worker to consume Arrow tables and insert into ClickHouse."""
+        import time
         try:
             while True:
                 try:
@@ -770,16 +903,32 @@ class BreachIngestor:
                     q.task_done()
                     break
                 
-                try:
-                    table, table_name = item
-                    self.repository.insert_arrow_batch(table, table_name)
-                except Exception as e:
-                    log_error(f"Worker Upload Failed: {e}")
-                    if not error_container:
-                        error_container.append(e)
-                    error_event.set()
-                finally:
-                    q.task_done()
+                table, table_name = item
+                retries = 3
+                for attempt in range(retries):
+                    try:
+                        self.repository.insert_arrow_batch(table, table_name)
+                        break
+                    except Exception as e:
+                        is_network_error = "Broken pipe" in str(e) or "Connection reset" in str(e)
+                        if is_network_error and attempt < retries - 1:
+                            sleep_time = 2 ** attempt
+                            log_warning(f"Worker upload failed (attempt {attempt+1}/{retries}). Retrying in {sleep_time}s... Error: {e}")
+                            time.sleep(sleep_time)
+                            # Force reset client connection if possible
+                            if hasattr(self.repository, "reset_connection"):
+                                self.repository.reset_connection()
+                        else:
+                            log_error(f"Worker Upload Failed after {attempt+1} attempts: {e}")
+                            if not error_container:
+                                error_container.append(e)
+                            error_event.set()
+                            q.task_done() # Mark as done so we don't block join? No, wait.
+                            # If we failed, we should probably stop consuming or break.
+                            # But we need to ensure task_done is called for the current item.
+                            # The outer finally block handles task_done.
+                            raise e 
+                q.task_done()
                 
                 if error_event.is_set():
                     try:

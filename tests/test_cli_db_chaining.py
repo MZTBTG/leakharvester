@@ -1,8 +1,6 @@
-import pytest
 from unittest.mock import patch, MagicMock
 from typer.testing import CliRunner
 from leakharvester.cli.main import app
-from leakharvester.cli.commands import db
 
 runner = CliRunner()
 
@@ -13,7 +11,7 @@ def test_db_path_and_init_chaining(tmp_path):
     
     # Mock dependencies
     with patch("leakharvester.cli.commands.db.SettingsManager") as MockSM, \
-         patch("leakharvester.cli.commands.db.ClickHouseAdapter") as MockAdapter, \
+         patch("leakharvester.cli.commands.db.ClickHouseAdapter"), \
          patch("leakharvester.cli.commands.db.ensure_db_running"), \
          patch("uuid.uuid4", return_value="test-uuid-chain"), \
          patch("leakharvester.cli.commands.db.settings") as mock_settings, \
@@ -24,7 +22,6 @@ def test_db_path_and_init_chaining(tmp_path):
         sm_instance = MockSM.return_value
         sm_instance.get_active_db_path.return_value = tmp_path / "chained_db"
         
-        repo_instance = MockAdapter.return_value
         
         # We need to verify that init logic is reached.
         # Init logic calls repo.execute_ddl or creates system_info

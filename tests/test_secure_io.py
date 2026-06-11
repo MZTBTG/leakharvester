@@ -1,8 +1,5 @@
 import pytest
 import pyarrow as pa
-import zstandard as zstd
-import nacl.exceptions
-from pathlib import Path
 from leakharvester.services.secure_io import SecureIO, LHError, MAGIC_BYTES
 
 # Helper to create a dummy Arrow Batch

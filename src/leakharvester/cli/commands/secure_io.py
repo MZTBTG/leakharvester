@@ -107,6 +107,8 @@ def import_command(
         ) as progress:
             task = progress.add_task("[cyan]Importing Batches...", total=None)
             
+            schema_checked = False
+            
             for batch in arrow_stream:
                 if include_columns or exclude_columns:
                     current_cols = batch.schema.names
@@ -124,6 +126,14 @@ def import_command(
                         batch = batch.select(indices)
                     except Exception as filter_err:
                         log_warning(f"Column filtering failed for batch, skipping filter: {filter_err}")
+
+                if not schema_checked:
+                    existing_cols = repo.get_columns("vault.breach_records")
+                    missing_cols = [c for c in batch.schema.names if c not in existing_cols]
+                    for col in missing_cols:
+                        log_info(f"Adding missing column '{col}' to vault.breach_records...")
+                        repo.add_column("vault.breach_records", col)
+                    schema_checked = True
 
                 rows = batch.num_rows
                 total_rows += rows

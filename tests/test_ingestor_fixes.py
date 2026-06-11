@@ -1,9 +1,43 @@
 import pytest
-from pathlib import Path
-import queue
 import polars as pl
 from leakharvester.services.ingestor import BreachIngestor
 from leakharvester.adapters.local_fs import LocalFileSystemAdapter
+
+import io
+import pyarrow as pa
+
+class MockStdin(io.BytesIO):
+    def close(self):
+        pass
+
+class MockProcess:
+    def __init__(self, repo, table_name):
+        self.mock_stdin = MockStdin()
+        self.stdin = self.mock_stdin
+        self.repo = repo
+        self.table_name = table_name
+        self.returncode = 0
+
+    def communicate(self):
+        self.mock_stdin.seek(0)
+        try:
+            reader = pa.ipc.open_stream(self.mock_stdin)
+            while True:
+                try:
+                    batch = reader.read_next_batch()
+                    table = pa.Table.from_batches([batch])
+                    self.repo.inserts.append((self.table_name, table))
+                except StopIteration:
+                    break
+        except Exception:
+            pass
+        return (b"", b"")
+
+    def kill(self):
+        pass
+
+    def poll(self):
+        return self.returncode
 
 class MockRepository:
     def __init__(self):
@@ -27,9 +61,13 @@ class MockRepository:
 
     def get_columns(self, table):
         return self.columns
-    
-    def add_column(self, table, col):
-        self.columns.append(col)
+
+    def add_column(self, table, name, type_):
+        self.columns.append(name)
+        return True
+
+    def get_arrow_stream_process(self, table_name, columns=None):
+        return MockProcess(self, table_name)
 
 @pytest.fixture
 def temp_dirs(tmp_path):
@@ -45,13 +83,19 @@ def test_ingest_cleanup_on_error_fixed(temp_dirs):
     raw, staging, quarantine = temp_dirs
 
     csv_path = raw / "broken.csv"
-    csv_path.write_text("email,pass\ntest@example.com,secret123") 
+    csv_path.write_text("email,password\ntest@example.com,secret123") 
 
     fs = LocalFileSystemAdapter()
     
     class FailingRepo(MockRepository):
-        def insert_arrow_batch(self, table, name):
-            raise RuntimeError("Database connection lost")
+        def get_arrow_stream_process(self, table_name, columns=None):
+            p = MockProcess(self, table_name)
+            p.returncode = 1
+            # Mock communicate to simulate a failure
+            def mock_communicate():
+                return (b"", b"Simulated database connection lost")
+            p.communicate = mock_communicate
+            return p
 
     failing_repo = FailingRepo()
     ingestor = BreachIngestor(failing_repo, fs)
@@ -69,10 +113,10 @@ def test_latin1_encoding(temp_dirs):
     
     # Simple Latin-1 test
     file_path = raw / "latin1.txt"
-    # "email:pass" header, then a row with latin-1 char in PASSWORD
+    # "email:password" header, then a row with latin-1 char in PASSWORD
     # This verifies decoding works without tripping email regex
     with open(file_path, "wb") as f:
-        f.write(b"email:pass\nuser@example.com:secr\xe9t\n")
+        f.write(b"email:password\nuser@example.com:secr\xe9t\n")
         
     repo = MockRepository()
     fs = LocalFileSystemAdapter()
@@ -104,5 +148,5 @@ def test_ambiguity_abort(temp_dirs):
     # Should abort (no inserts, no swap)
     assert len(repo.inserts) == 0
     assert len(repo.partition_swaps) == 0
-    # Should drop staging table
-    assert len(repo.dropped_tables) >= 1
+    # Should NOT drop staging table because it was never created
+    assert len(repo.dropped_tables) == 0
